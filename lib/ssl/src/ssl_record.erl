@@ -646,16 +646,46 @@ encode_tls_cipher_text(Type, {MajVer, MinVer}, Fragment) ->
     [<<?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>, Fragment].
 
 cipher(Type, Version, Fragment, CS0) ->
+    #connection_state{cipher_state = CipherS0,
+		      security_parameters=
+			  #security_parameters{bulk_cipher_algorithm = BCA}} = CS0,
+    cipher(BCA, Type, Version, Fragment, CipherS0, CS0).
+
+ cipher(BCA, Type, Version, Fragment, CipherS0, CS0)
+  when BCA == ?AES_GCM ->
+    Seq = CS0#connection_state.sequence_number,
+    CS1 = bump_seqno(CS0),
+    {MajVer, MinVer} = Version,
     Length = erlang:iolist_size(Fragment),
-    {MacHash, CS1=#connection_state{cipher_state = CipherS0,
-				 security_parameters=
-				 #security_parameters{bulk_cipher_algorithm = 
-						      BCA}
-				}} = 
-	hash_and_bump_seqno(CS0, Type, Version, Length, Fragment),
+    AAD = <<Seq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>,
+    {Ciphered, CipherS1} = ssl_cipher:cipher_aead(BCA, CipherS0, AAD, Fragment, Version),
+    CS2 = CS1#connection_state{cipher_state=CipherS1},
+    {Ciphered, CS2};
+
+cipher(BCA, Type, Version, Fragment, CipherS0, CS0) ->
+    Length = erlang:iolist_size(Fragment),
+    {MacHash, CS1} = hash_and_bump_seqno(CS0, Type, Version, Length, Fragment),
     {Ciphered, CipherS1} = ssl_cipher:cipher(BCA, CipherS0, MacHash, Fragment, Version),
     CS2 = CS1#connection_state{cipher_state=CipherS1},
     {Ciphered, CS2}.
+
+decipher(TLS=#ssl_tls{type=Type, version=Version, fragment=Fragment}, CS0)
+  when CS0#connection_state.security_parameters#security_parameters.bulk_cipher_algorithm == ?AES_GCM ->
+    SP = CS0#connection_state.security_parameters,
+    BCA = SP#security_parameters.bulk_cipher_algorithm,
+    CipherS0 = CS0#connection_state.cipher_state,
+    Seq = CS0#connection_state.sequence_number,
+    {MajVer, MinVer} = Version,
+    Length = size(Fragment) - 24,
+    AAD = <<Seq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>,
+    case ssl_cipher:decipher_aead(BCA, CipherS0, AAD, Fragment, Version) of
+	{T, CipherS1} ->
+	    CS1 = CS0#connection_state{cipher_state = CipherS1},
+	    CS2 = bump_seqno(CS1),
+	    {TLS#ssl_tls{fragment = T}, CS2};
+	#alert{} = Alert ->
+	    Alert
+    end;
 
 decipher(TLS=#ssl_tls{type=Type, version=Version, fragment=Fragment}, CS0) ->
     SP = CS0#connection_state.security_parameters,
@@ -694,7 +724,10 @@ hash_and_bump_seqno(#connection_state{sequence_number = SeqNo,
 		    SecPars#security_parameters.mac_algorithm,
 		    MacSecret, SeqNo, Type,
 		    Length, Fragment),
-    {Hash, CS0#connection_state{sequence_number = SeqNo+1}}.
+    {Hash, bump_seqno(CS0)}.
+
+bump_seqno(#connection_state{sequence_number = SeqNo} = CS0) ->
+    CS0#connection_state{sequence_number = SeqNo+1}.
 
 is_correct_mac(Mac, Mac) ->
     true;

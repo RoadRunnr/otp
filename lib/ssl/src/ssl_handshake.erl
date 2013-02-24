@@ -1030,6 +1030,7 @@ select_compression(_CompressionMetodes) ->
     ?NULL.
 
 master_secret(Version, MasterSecret, #security_parameters{
+			 bulk_cipher_algorithm = BCA,
 			 client_random = ClientRandom,
 			 server_random = ServerRandom,
 			 hash_size = HashSize,
@@ -1038,18 +1039,18 @@ master_secret(Version, MasterSecret, #security_parameters{
 			 expanded_key_material_length = EKML,
 			 iv_size = IVS},
 	      ConnectionStates, Role) ->
-    {ClientWriteMacSecret, ServerWriteMacSecret, ClientWriteKey,
+    {ClientWriteIV, ServerWriteIV, ClientWriteKey,
      ServerWriteKey, ClientIV, ServerIV} =
 	setup_keys(Version, PrfAlgo, MasterSecret, ServerRandom,
 		   ClientRandom, HashSize, KML, EKML, IVS),
 
     ConnStates1 = ssl_record:set_master_secret(MasterSecret, ConnectionStates),
     ConnStates2 =
-	ssl_record:set_mac_secret(ClientWriteMacSecret, ServerWriteMacSecret,
+	ssl_record:set_mac_secret(ClientWriteIV, ServerWriteIV,
 				  Role, ConnStates1),
 
-    ClientCipherState = #cipher_state{iv = ClientIV, key = ClientWriteKey},
-    ServerCipherState = #cipher_state{iv = ServerIV, key = ServerWriteKey}, 
+    ClientCipherState = ssl_cipher:cipher_init(BCA, IVS, ClientIV, ClientWriteKey),
+    ServerCipherState = ssl_cipher:cipher_init(BCA, IVS, ServerIV, ServerWriteKey),
     {MasterSecret, 
      ssl_record:set_pending_cipher_state(ConnStates2, ClientCipherState, 
 					 ServerCipherState, Role)}.

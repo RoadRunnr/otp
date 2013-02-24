@@ -132,7 +132,7 @@
     </c></p>
 
    <p><c>cipher() = rc4_128 | des_cbc | '3des_ede_cbc'
-      | aes_128_cbc | aes_256_cbc </c></p>
+      | aes_128_cbc | aes_256_cbc | aes_128_gcm | aes_256_gcm </c></p>
 
    <p> <c>hash() = md5 | sha
     </c></p>
@@ -194,7 +194,8 @@
       '3des_ede_cbc', sha}, {dh_anon, aes_128_cbc, sha}, {dh_anon,
       aes_256_cbc, sha}, {ecdh_anon, null, sha}, {ecdh_anon, rc4_128,
       sha}, {ecdh_anon, '3des_ede_cbc', sha}, {ecdh_anon, aes_128_cbc,
-      sha}, {ecdh_anon, aes_256_cbc, sha}) are supported for testing
+      sha}, {ecdh_anon, aes_256_cbc, sha} {dh_anon, aes_128_gcm, sha256},
+      {dh_anon, aes_256_gcm, sha384}) are supported for testing
       purposes and will only work if explicitly enabled by this
       option and they are supported/enabled by the peer also.
       </item>

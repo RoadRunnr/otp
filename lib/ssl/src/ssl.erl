@@ -950,7 +950,7 @@ cipher_suites(Version, [{_,_,_}| _] = Ciphers0) ->
     ssl_cipher:filter_suites(cipher_suites(Version, Ciphers));
 cipher_suites(Version, [Cipher0 | _] = Ciphers0) when is_binary(Cipher0) ->
     Supported0 = ssl_cipher:suites(Version)
-	++ ssl_cipher:anonymous_suites()
+	++ ssl_cipher:anonymous_suites(Version)
 	++ ssl_cipher:psk_suites(Version)
 	++ ssl_cipher:srp_suites(),
     Supported1 = ssl_cipher:filter_suites(Supported0),

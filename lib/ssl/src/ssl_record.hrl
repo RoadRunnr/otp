@@ -88,7 +88,8 @@
 -define('3DES', 4).
 -define(DES40, 5).
 -define(IDEA, 6).
--define(AES, 7). 
+-define(AES_CBC, 7).
+-define(AES_GCM, 8).
 
 %% CipherType
 -define(STREAM, 0).

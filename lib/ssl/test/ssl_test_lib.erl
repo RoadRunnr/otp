@@ -797,8 +797,10 @@ anonymous_suites() ->
 	 {ecdh_anon,rc4_128,sha},
 	 {ecdh_anon,'3des_ede_cbc',sha},
 	 {ecdh_anon,aes_128_cbc,sha},
-	 {ecdh_anon,aes_256_cbc,sha}],
-    ssl_cipher:filter_suites(Suites).
+	 {ecdh_anon,aes_256_cbc,sha},
+	 {dh_anon, aes_128_gcm, null},
+	 {dh_anon, aes_256_gcm, null}],
+    filter_suites(Suites).
 
 psk_suites() ->
     Suites =
@@ -814,7 +816,7 @@ psk_suites() ->
 	 {rsa_psk, '3des_ede_cbc', sha},
 	 {rsa_psk, aes_128_cbc, sha},
 	 {rsa_psk, aes_256_cbc, sha}],
-    ssl_cipher:filter_suites(Suites).
+    filter_suites(Suites).
 
 srp_suites() ->
     Suites =
@@ -824,14 +826,14 @@ srp_suites() ->
 	 {srp_rsa, aes_128_cbc, sha},
 	 {srp_anon, aes_256_cbc, sha},
 	 {srp_rsa, aes_256_cbc, sha}],
-    ssl_cipher:filter_suites(Suites).
+    filter_suites(Suites).
 
 srp_dss_suites() ->
     Suites =
 	[{srp_dss, '3des_ede_cbc', sha},
 	 {srp_dss, aes_128_cbc, sha},
 	 {srp_dss, aes_256_cbc, sha}],
-    ssl_cipher:filter_suites(Suites).
+    filter_suites(Suites).
 
 pem_to_der(File) ->
     {ok, PemBin} = file:read_file(File),
@@ -948,3 +950,13 @@ send_recv_result_active_once(Socket) ->
 	{ssl, Socket, "Hello world"} ->
 	    ok
     end.
+
+filter_suites(Ciphers0) ->
+    Version = ssl_record:highest_protocol_version([]),
+    Supported0 = ssl_cipher:suites(Version)
+	++ ssl_cipher:anonymous_suites(Version)
+	++ ssl_cipher:psk_suites(Version)
+	++ ssl_cipher:srp_suites(),
+    Supported1 = ssl_cipher:filter_suites(Supported0),
+    Supported2 = [ssl:suite_definition(S) || S <- Supported1],
+    [Cipher || Cipher <- Ciphers0, lists:member(Cipher, Supported2)].

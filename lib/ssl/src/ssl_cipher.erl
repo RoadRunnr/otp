@@ -33,8 +33,8 @@
 -include_lib("public_key/include/public_key.hrl").
 
 -export([security_parameters/3, suite_definition/1,
-	 decipher/5, cipher/5,
-	 suite/1, suites/1, anonymous_suites/0, psk_suites/1, srp_suites/0,
+	 cipher_init/4, decipher/5, cipher/5, decipher_aead/5, cipher_aead/5,
+	 suite/1, suites/1, anonymous_suites/1, psk_suites/1, srp_suites/0,
 	 openssl_suite/1, openssl_suite_name/1, filter/2, filter_suites/1,
 	 hash_algorithm/1, sign_algorithm/1]).
 
@@ -62,6 +62,20 @@ security_parameters(Version, CipherSuite, SecParams) ->
       hash_size = hash_size(Hash)}.
 
 %%--------------------------------------------------------------------
+-spec cipher_init(cipher_enum(), integer(), binary(), binary()) -> #cipher_state{}.
+%%
+%% Description: Initializes the #cipher_state according to BCA
+%%-------------------------------------------------------------------
+cipher_init(?AES_GCM, IVS, IV, Key) ->
+    Ctx = crypto:aes_gcm128_init(Key),
+    #cipher_state{iv_size = IVS, iv = IV, key = Key, state = Ctx, nonce = 1};
+cipher_init(?RC4, IVS, IV, Key) ->
+    State = crypto:rc4_set_key(Key),
+    #cipher_state{iv_size = IVS, iv = IV, key = Key, state = State};
+cipher_init(_BCA, IVS, IV, Key) ->
+    #cipher_state{iv_size = IVS, iv = IV, key = Key}.
+
+%%--------------------------------------------------------------------
 -spec cipher(cipher_enum(), #cipher_state{}, binary(), binary(), tls_version()) ->
 		    {binary(), #cipher_state{}}. 
 %%
@@ -72,10 +86,7 @@ cipher(?NULL, CipherState, <<>>, Fragment, _Version) ->
     GenStreamCipherList = [Fragment, <<>>],
     {GenStreamCipherList, CipherState};
 cipher(?RC4, CipherState, Mac, Fragment, _Version) ->
-    State0 = case CipherState#cipher_state.state of
-                 undefined -> crypto:rc4_set_key(CipherState#cipher_state.key);
-                 S -> S
-             end,
+    State0 = CipherState#cipher_state.state,
     GenStreamCipherList = [Fragment, Mac],
     {State1, T} = crypto:rc4_encrypt_with_state(State0, GenStreamCipherList),
     {T, CipherState#cipher_state{state = State1}};
@@ -87,12 +98,18 @@ cipher(?'3DES', CipherState, Mac, Fragment, Version) ->
     block_cipher(fun(<<K1:8/binary, K2:8/binary, K3:8/binary>>, IV, T) ->
 			 crypto:des3_cbc_encrypt(K1, K2, K3, IV, T)
 		 end, block_size(des_cbc), CipherState, Mac, Fragment, Version);
-cipher(?AES, CipherState, Mac, Fragment, Version) ->
+cipher(?AES_CBC, CipherState, Mac, Fragment, Version) ->
     block_cipher(fun(Key, IV, T) when byte_size(Key) =:= 16 ->
 			 crypto:aes_cbc_128_encrypt(Key, IV, T);
 		    (Key, IV, T) when byte_size(Key) =:= 32 ->
 			 crypto:aes_cbc_256_encrypt(Key, IV, T)
 		 end, block_size(aes_128_cbc), CipherState, Mac, Fragment, Version).
+
+cipher_aead(?AES_GCM, #cipher_state{iv = IV0, state = Ctx, nonce = Nonce} = CipherState0, AAD, Fragment, _Version) ->
+    <<Salt:4/bytes, _/binary>> = IV0,
+    IV1 = <<Salt/binary, Nonce:64/integer>>,
+    {Content, CipherTag} = crypto:aes_gcm128_encrypt(Ctx, IV1, AAD, Fragment),
+    {<<Nonce:64/integer, Content/binary, CipherTag/binary>>, CipherState0#cipher_state{nonce = Nonce + 1}}.
 
 build_cipher_block(BlockSz, Mac, Fragment) ->
     TotSz = byte_size(Mac) + erlang:iolist_size(Fragment) + 1,
@@ -153,12 +170,30 @@ decipher(?'3DES', HashSz, CipherState, Fragment, Version) ->
     block_decipher(fun(<<K1:8/binary, K2:8/binary, K3:8/binary>>, IV, T) ->
 			   crypto:des3_cbc_decrypt(K1, K2, K3, IV, T)
 		   end, CipherState, HashSz, Fragment, Version);
-decipher(?AES, HashSz, CipherState, Fragment, Version) ->
+decipher(?AES_CBC, HashSz, CipherState, Fragment, Version) ->
     block_decipher(fun(Key, IV, T) when byte_size(Key) =:= 16 ->
 			   crypto:aes_cbc_128_decrypt(Key, IV, T);
 		      (Key, IV, T) when byte_size(Key) =:= 32 ->
 			   crypto:aes_cbc_256_decrypt(Key, IV, T)
 		   end, CipherState, HashSz, Fragment, Version).
+
+decipher_aead(?AES_GCM, #cipher_state{iv = IV0, state = Ctx} = CipherState0, AAD, Fragment, _Version) ->
+    try
+	CipherLen = size(Fragment) - 24,
+	<<Nonce:8/bytes, CipherText:CipherLen/bytes, Tag:16/bytes>> = Fragment,
+	<<Salt:4/bytes, _/binary>> = IV0,
+	IV1 = <<Salt/binary, Nonce/binary>>,
+	Content = crypto:aes_gcm128_decrypt(Ctx, IV1, AAD, CipherText, Tag),
+	{Content, CipherState0}
+    catch
+	_:_ ->
+	    %% This is a DECRYPTION_FAILED but
+	    %% "differentiating between bad_record_mac and decryption_failed
+	    %% alerts may permit certain attacks against CBC mode as used in
+	    %% TLS [CBCATT].  It is preferable to uniformly use the
+	    %% bad_record_mac alert to hide the specific type of the error."
+	    ?ALERT_REC(?FATAL, ?BAD_RECORD_MAC)
+    end.
 
 block_decipher(Fun, #cipher_state{key=Key, iv=IV} = CipherState0, 
 	       HashSz, Fragment, Version) ->
@@ -200,12 +235,22 @@ suites({3, N}) ->
     ssl_tls1:suites(N).
 
 %%--------------------------------------------------------------------
--spec anonymous_suites() -> [cipher_suite()].
+-spec anonymous_suites(tls_version()) -> [cipher_suite()].
 %%
 %% Description: Returns a list of the anonymous cipher suites, only supported
 %% if explicitly set by user. Intended only for testing.
 %%--------------------------------------------------------------------
-anonymous_suites() ->
+anonymous_suites({3, N}) ->
+    anonymous_suites(N);
+
+anonymous_suites(N)
+  when N >= 3 ->
+    [
+     ?TLS_DH_anon_WITH_AES_128_GCM_SHA256,
+     ?TLS_DH_anon_WITH_AES_256_GCM_SHA384
+    ] ++ anonymous_suites(0);
+
+anonymous_suites(_) ->
     [?TLS_DH_anon_WITH_RC4_128_MD5,
      ?TLS_DH_anon_WITH_DES_CBC_SHA,
      ?TLS_DH_anon_WITH_3DES_EDE_CBC_SHA,
@@ -501,7 +546,51 @@ suite_definition(?TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384) ->
 suite_definition(?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256) ->
     {ecdh_rsa, aes_128_cbc, sha256, sha256};
 suite_definition(?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384) ->
-    {ecdh_rsa, aes_256_cbc, sha384, sha384}.
+    {ecdh_rsa, aes_256_cbc, sha384, sha384};
+
+%% RFC 5288 AES-GCM Cipher Suites
+suite_definition(?TLS_RSA_WITH_AES_128_GCM_SHA256) ->
+    {rsa, aes_128_gcm, null, sha256};
+suite_definition(?TLS_RSA_WITH_AES_256_GCM_SHA384) ->
+    {rsa, aes_256_gcm, null, sha384};
+suite_definition(?TLS_DHE_RSA_WITH_AES_128_GCM_SHA256) ->
+    {dhe_rsa, aes_128_gcm, null, sha256};
+suite_definition(?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384) ->
+    {dhe_rsa, aes_256_gcm, null, sha384};
+suite_definition(?TLS_DH_RSA_WITH_AES_128_GCM_SHA256) ->
+    {dh_rsa, aes_128_gcm, null, sha256};
+suite_definition(?TLS_DH_RSA_WITH_AES_256_GCM_SHA384) ->
+    {dh_rsa, aes_256_gcm, null, sha384};
+suite_definition(?TLS_DHE_DSS_WITH_AES_128_GCM_SHA256) ->
+    {dhe_dss, aes_128_gcm, null, sha256};
+suite_definition(?TLS_DHE_DSS_WITH_AES_256_GCM_SHA384) ->
+    {dhe_dss, aes_256_gcm, null, sha384};
+suite_definition(?TLS_DH_DSS_WITH_AES_128_GCM_SHA256) ->
+    {dh_dss, aes_128_gcm, null, sha256};
+suite_definition(?TLS_DH_DSS_WITH_AES_256_GCM_SHA384) ->
+    {dh_dss, aes_256_gcm, null, sha384};
+suite_definition(?TLS_DH_anon_WITH_AES_128_GCM_SHA256) ->
+    {dh_anon, aes_128_gcm, null, sha256};
+suite_definition(?TLS_DH_anon_WITH_AES_256_GCM_SHA384) ->
+    {dh_anon, aes_256_gcm, null, sha384};
+
+%% RFC 5289 ECC AES-GCM Cipher Suites
+suite_definition(?TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256) ->
+    {ecdhe_ecdsa, aes_128_gcm, null, sha256};
+suite_definition(?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384) ->
+    {ecdhe_ecdsa, aes_256_gcm, null, sha384};
+suite_definition(?TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256) ->
+    {ecdh_ecdsa, aes_128_gcm, null, sha256};
+suite_definition(?TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384) ->
+    {ecdh_ecdsa, aes_256_gcm, null, sha384};
+suite_definition(?TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256) ->
+    {ecdhe_rsa, aes_128_gcm, null, sha256};
+suite_definition(?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) ->
+    {ecdhe_rsa, aes_256_gcm, null, sha384};
+suite_definition(?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256) ->
+    {ecdh_rsa, aes_128_gcm, null, sha256};
+suite_definition(?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384) ->
+    {ecdh_rsa, aes_256_gcm, null, sha384}.
 
 %%--------------------------------------------------------------------
 -spec suite(erl_cipher_suite()) -> cipher_suite().
@@ -724,7 +813,51 @@ suite({ecdhe_rsa, aes_256_cbc, sha384}) ->
 suite({ecdh_rsa, aes_128_cbc, sha256}) ->
     ?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256;
 suite({ecdh_rsa, aes_256_cbc, sha384}) ->
-    ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384.
+    ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384;
+
+%% RFC 5288 AES-GCM Cipher Suites
+suite({rsa, aes_128_gcm, null}) ->
+    ?TLS_RSA_WITH_AES_128_GCM_SHA256;
+suite({rsa, aes_256_gcm, null}) ->
+    ?TLS_RSA_WITH_AES_256_GCM_SHA384;
+suite({dhe_rsa, aes_128_gcm, null}) ->
+    ?TLS_DHE_RSA_WITH_AES_128_GCM_SHA256;
+suite({dhe_rsa, aes_256_gcm, null}) ->
+    ?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384;
+suite({dh_rsa, aes_128_gcm, null}) ->
+    ?TLS_DH_RSA_WITH_AES_128_GCM_SHA256;
+suite({dh_rsa, aes_256_gcm, null}) ->
+    ?TLS_DH_RSA_WITH_AES_256_GCM_SHA384;
+suite({dhe_dss, aes_128_gcm, null}) ->
+    ?TLS_DHE_DSS_WITH_AES_128_GCM_SHA256;
+suite({dhe_dss, aes_256_gcm, null}) ->
+    ?TLS_DHE_DSS_WITH_AES_256_GCM_SHA384;
+suite({dh_dss, aes_128_gcm, null}) ->
+    ?TLS_DH_DSS_WITH_AES_128_GCM_SHA256;
+suite({dh_dss, aes_256_gcm, null}) ->
+    ?TLS_DH_DSS_WITH_AES_256_GCM_SHA384;
+suite({dh_anon, aes_128_gcm, null}) ->
+    ?TLS_DH_anon_WITH_AES_128_GCM_SHA256;
+suite({dh_anon, aes_256_gcm, null}) ->
+    ?TLS_DH_anon_WITH_AES_256_GCM_SHA384;
+
+%% RFC 5289 ECC AES-GCM Cipher Suites
+suite({ecdhe_ecdsa, aes_128_gcm, null}) ->
+    ?TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256;
+suite({ecdhe_ecdsa, aes_256_gcm, null}) ->
+    ?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384;
+suite({ecdh_ecdsa, aes_128_gcm, null}) ->
+    ?TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256;
+suite({ecdh_ecdsa, aes_256_gcm, null}) ->
+    ?TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384;
+suite({ecdhe_rsa, aes_128_gcm, null}) ->
+    ?TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
+suite({ecdhe_rsa, aes_256_gcm, null}) ->
+    ?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384;
+suite({ecdh_rsa, aes_128_gcm, null}) ->
+    ?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256;
+suite({ecdh_rsa, aes_256_gcm, null}) ->
+    ?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384.
 
 %%--------------------------------------------------------------------
 -spec openssl_suite(openssl_cipher_suite()) -> cipher_suite().
@@ -839,7 +972,40 @@ openssl_suite("ECDHE-RSA-AES256-SHA384") ->
 openssl_suite("ECDH-RSA-AES128-SHA256") ->
     ?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256;
 openssl_suite("ECDH-RSA-AES256-SHA384") ->
-    ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384.
+    ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384;
+
+%% RFC 5288 AES-GCM Cipher Suites
+openssl_suite("AES128-GCM-SHA256") ->
+    ?TLS_RSA_WITH_AES_128_GCM_SHA256;
+openssl_suite("AES256-GCM-SHA384") ->
+    ?TLS_RSA_WITH_AES_256_GCM_SHA384;
+openssl_suite("DHE-RSA-AES128-GCM-SHA256") ->
+    ?TLS_DHE_RSA_WITH_AES_128_GCM_SHA256;
+openssl_suite("DHE-RSA-AES256-GCM-SHA384") ->
+    ?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384;
+openssl_suite("DHE-DSS-AES128-GCM-SHA256") ->
+    ?TLS_DHE_DSS_WITH_AES_128_GCM_SHA256;
+openssl_suite("DHE-DSS-AES256-GCM-SHA384") ->
+    ?TLS_DHE_DSS_WITH_AES_256_GCM_SHA384;
+
+%% RFC 5289 ECC AES-GCM Cipher Suites
+
+openssl_suite("ECDHE-ECDSA-AES128-GCM-SHA256") ->
+    ?TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256;
+openssl_suite("ECDHE-ECDSA-AES256-GCM-SHA384") ->
+    ?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384;
+openssl_suite("ECDH-ECDSA-AES128-GCM-SHA256") ->
+    ?TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256;
+openssl_suite("ECDH-ECDSA-AES256-GCM-SHA384") ->
+    ?TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384;
+openssl_suite("ECDHE-RSA-AES128-GCM-SHA256") ->
+    ?TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
+openssl_suite("ECDHE-RSA-AES256-GCM-SHA384") ->
+    ?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384;
+openssl_suite("ECDH-RSA-AES128-GCM-SHA256") ->
+    ?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256;
+openssl_suite("ECDH-RSA-AES256-GCM-SHA384") ->
+    ?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384.
 
 %%--------------------------------------------------------------------
 -spec openssl_suite_name(cipher_suite()) -> openssl_cipher_suite().
@@ -976,6 +1142,39 @@ openssl_suite_name(?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256) ->
 openssl_suite_name(?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384) ->
     "ECDH-RSA-AES256-SHA384";
 
+%% RFC 5288 AES-GCM Cipher Suites
+openssl_suite_name(?TLS_RSA_WITH_AES_128_GCM_SHA256) ->
+    "AES128-GCM-SHA256";
+openssl_suite_name(?TLS_RSA_WITH_AES_256_GCM_SHA384) ->
+    "AES256-GCM-SHA384";
+openssl_suite_name(?TLS_DHE_RSA_WITH_AES_128_GCM_SHA256) ->
+    "DHE-RSA-AES128-GCM-SHA256";
+openssl_suite_name(?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384) ->
+    "DHE-RSA-AES256-GCM-SHA384";
+openssl_suite_name(?TLS_DHE_DSS_WITH_AES_128_GCM_SHA256) ->
+    "DHE-DSS-AES128-GCM-SHA256";
+openssl_suite_name(?TLS_DHE_DSS_WITH_AES_256_GCM_SHA384) ->
+    "DHE-DSS-AES256-GCM-SHA384";
+
+%% RFC 5289 ECC AES-GCM Cipher Suites
+
+openssl_suite_name(?TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256) ->
+    "ECDHE-ECDSA-AES128-GCM-SHA256";
+openssl_suite_name(?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384) ->
+    "ECDHE-ECDSA-AES256-GCM-SHA384";
+openssl_suite_name(?TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256) ->
+    "ECDH-ECDSA-AES128-GCM-SHA256";
+openssl_suite_name(?TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384) ->
+    "ECDH-ECDSA-AES256-GCM-SHA384";
+openssl_suite_name(?TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256) ->
+    "ECDHE-RSA-AES128-GCM-SHA256";
+openssl_suite_name(?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) ->
+    "ECDHE-RSA-AES256-GCM-SHA384";
+openssl_suite_name(?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256) ->
+    "ECDH-RSA-AES128-GCM-SHA256";
+openssl_suite_name(?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384) ->
+    "ECDH-RSA-AES256-GCM-SHA384";
+
 %% No oppenssl name
 openssl_suite_name(Cipher) ->
     suite_definition(Cipher).
@@ -1055,6 +1254,10 @@ is_acceptable_keyexchange(KeyExchange, Algos)
 is_acceptable_keyexchange(_, _) ->
     true.
 
+is_acceptable_cipher(Cipher, Algos)
+  when Cipher == aes_128_gcm;
+       Cipher == aes_256_gcm ->
+    proplists:get_bool(gcm, Algos);
 is_acceptable_cipher(_, _) ->
     true.
 
@@ -1082,7 +1285,10 @@ bulk_cipher_algorithm('3des_ede_cbc') ->
     ?'3DES';
 bulk_cipher_algorithm(Cipher) when Cipher == aes_128_cbc;
 				   Cipher == aes_256_cbc ->
-    ?AES.
+    ?AES_CBC;
+bulk_cipher_algorithm(Cipher) when Cipher == aes_128_gcm;
+				   Cipher == aes_256_gcm ->
+    ?AES_GCM.
 
 type(Cipher) when Cipher == null;
 		  Cipher == rc4_128 ->
@@ -1091,7 +1297,9 @@ type(Cipher) when Cipher == null;
 type(Cipher) when Cipher == des_cbc;
 		  Cipher == '3des_ede_cbc';
 		  Cipher == aes_128_cbc;
-		  Cipher == aes_256_cbc ->
+		  Cipher == aes_256_cbc;
+		  Cipher == aes_128_gcm;
+		  Cipher == aes_256_gcm ->
     ?BLOCK.
 
 key_material(null) ->
@@ -1104,7 +1312,11 @@ key_material('3des_ede_cbc') ->
     24;
 key_material(aes_128_cbc) ->
     16;
+key_material(aes_128_gcm) ->
+    16;
 key_material(aes_256_cbc) ->
+    32;
+key_material(aes_256_gcm) ->
     32.
 
 expanded_key_material(null) ->
@@ -1116,7 +1328,9 @@ expanded_key_material(Cipher) when Cipher == des_cbc ->
 expanded_key_material('3des_ede_cbc') ->
     24;
 expanded_key_material(Cipher) when Cipher == aes_128_cbc;
- 				   Cipher == aes_256_cbc ->
+				   Cipher == aes_256_cbc;
+				   Cipher == aes_128_gcm;
+				   Cipher == aes_256_gcm ->
     unknown.  
 
 
@@ -1125,16 +1339,21 @@ effective_key_bits(null) ->
 effective_key_bits(des_cbc) ->
     56;
 effective_key_bits(Cipher) when Cipher == rc4_128;
-				Cipher == aes_128_cbc ->
+				Cipher == aes_128_cbc;
+				Cipher == aes_128_gcm ->
     128;
 effective_key_bits('3des_ede_cbc') ->
     168;
-effective_key_bits(aes_256_cbc) ->
+effective_key_bits(Cipher) when Cipher == aes_256_cbc;
+				Cipher == aes_256_gcm ->
     256.
 
 iv_size(Cipher) when Cipher == null;
 		     Cipher == rc4_128 ->
     0;
+iv_size(Cipher) when Cipher == aes_128_gcm;
+		     Cipher == aes_256_gcm ->
+    4;
 iv_size(Cipher) ->
     block_size(Cipher).
 
@@ -1142,6 +1361,9 @@ block_size(Cipher) when Cipher == des_cbc;
 			Cipher == '3des_ede_cbc' -> 
     8;
 
+block_size(Cipher) when Cipher == aes_128_gcm;
+			Cipher == aes_256_gcm ->
+    16;
 block_size(Cipher) when Cipher == aes_128_cbc;
 			Cipher == aes_256_cbc ->
     16.
@@ -1295,7 +1517,9 @@ dhe_rsa_suites() ->
      ?TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA,
      ?TLS_DHE_RSA_WITH_AES_128_CBC_SHA256,
      ?TLS_DHE_RSA_WITH_AES_128_CBC_SHA,
-     ?TLS_DHE_RSA_WITH_DES_CBC_SHA].
+     ?TLS_DHE_RSA_WITH_DES_CBC_SHA,
+     ?TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
+     ?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384].
 
 psk_rsa_suites() ->
     [?TLS_RSA_PSK_WITH_AES_256_CBC_SHA384,
@@ -1318,7 +1542,9 @@ rsa_suites() ->
      ?TLS_RSA_WITH_AES_128_CBC_SHA,
      ?TLS_RSA_WITH_RC4_128_SHA,
      ?TLS_RSA_WITH_RC4_128_MD5,
-     ?TLS_RSA_WITH_DES_CBC_SHA].
+     ?TLS_RSA_WITH_DES_CBC_SHA,
+     ?TLS_RSA_WITH_AES_128_GCM_SHA256,
+     ?TLS_RSA_WITH_AES_256_GCM_SHA384].
 
 ecdh_rsa_suites() ->
     [?TLS_ECDH_RSA_WITH_NULL_SHA,
@@ -1327,7 +1553,9 @@ ecdh_rsa_suites() ->
      ?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA,
      ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA,
      ?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256,
-     ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384].
+     ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256,
+     ?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384].
 
 ecdhe_rsa_suites() ->
     [?TLS_ECDHE_RSA_WITH_NULL_SHA,
@@ -1336,7 +1564,9 @@ ecdhe_rsa_suites() ->
      ?TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
      ?TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
      ?TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
-     ?TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384].
+     ?TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+     ?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384].
 
 dsa_signed_suites() ->
     dhe_dss_suites() ++ srp_dss_suites().
@@ -1347,7 +1577,9 @@ dhe_dss_suites()  ->
      ?TLS_DHE_DSS_WITH_3DES_EDE_CBC_SHA,
      ?TLS_DHE_DSS_WITH_AES_128_CBC_SHA256,
      ?TLS_DHE_DSS_WITH_AES_128_CBC_SHA,
-     ?TLS_DHE_DSS_WITH_3DES_EDE_CBC_SHA].
+     ?TLS_DHE_DSS_WITH_3DES_EDE_CBC_SHA,
+     ?TLS_DHE_DSS_WITH_AES_128_GCM_SHA256,
+     ?TLS_DHE_DSS_WITH_AES_256_GCM_SHA384].
 
 srp_dss_suites() ->
     [?TLS_SRP_SHA_DSS_WITH_3DES_EDE_CBC_SHA,
@@ -1371,7 +1603,9 @@ ecdh_ecdsa_suites() ->
      ?TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA,
      ?TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA,
      ?TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256,
-     ?TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA384].
+     ?TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256,
+     ?TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384].
 
 ecdhe_ecdsa_suites() ->
     [?TLS_ECDHE_ECDSA_WITH_NULL_SHA,
@@ -1380,7 +1614,9 @@ ecdhe_ecdsa_suites() ->
      ?TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
      ?TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
      ?TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
-     ?TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384].
+     ?TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+     ?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384].
 
 filter_keyuse(OtpCert, Ciphers, Suites, SignSuites) ->
     TBSCert = OtpCert#'OTPCertificate'.tbsCertificate, 
