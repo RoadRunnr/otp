@@ -1002,7 +1002,7 @@ erlang_server_openssl_client_npn_only_client(Config) when is_list(Config) ->
 %%--------------------------------------------------------------------
 %% Internal functions ------------------------------------------------
 %%--------------------------------------------------------------------
-run_suites(Ciphers, Version, Config, Type) ->
+run_suites(Ciphers0, Version, Config, Type) ->
     {ClientOpts, ServerOpts} =
 	case Type of
 	    rsa ->
@@ -1013,6 +1013,7 @@ run_suites(Ciphers, Version, Config, Type) ->
 		 ?config(server_dsa_opts, Config)}
 	end,
 
+    Ciphers = filter_suites(Ciphers0),
     Result =  lists:map(fun(Cipher) ->
 				cipher(Cipher, Version, Config, ClientOpts, ServerOpts) end,
 			Ciphers),
@@ -1380,3 +1381,17 @@ check_sane_openssl_version(Version) ->
 	{_, _} ->
 	    true
     end.
+
+filter_suites(Suites) ->
+    OpenSSLSuites = gb_sets:from_list(string:tokens(os:cmd("openssl ciphers"), ":\n")),
+
+    lists:filter(fun(Suite) ->
+			 try
+			     OpenSSLSuite = ssl_cipher:openssl_suite_name(ssl_cipher:suite(Suite)),
+			     gb_sets:is_member(OpenSSLSuite, OpenSSLSuites)
+			 catch
+			     _:_ ->
+				 %% no OpenSSL name known
+				 false
+			 end
+		 end, Suites).
