@@ -815,7 +815,13 @@ psk_suites() ->
 	 {rsa_psk, rc4_128, sha},
 	 {rsa_psk, '3des_ede_cbc', sha},
 	 {rsa_psk, aes_128_cbc, sha},
-	 {rsa_psk, aes_256_cbc, sha}],
+	 {rsa_psk, aes_256_cbc, sha},
+	 {psk, aes_128_gcm, null},
+	 {psk, aes_256_gcm, null},
+	 {dhe_psk, aes_128_gcm, null},
+	 {dhe_psk, aes_256_gcm, null},
+	 {rsa_psk, aes_128_gcm, null},
+	 {rsa_psk, aes_256_gcm, null}],
     filter_suites(Suites).
 
 srp_suites() ->
