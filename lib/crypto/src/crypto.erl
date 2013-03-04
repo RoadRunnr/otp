@@ -70,6 +70,7 @@
 -export([aes_ctr_stream_init/2, aes_ctr_stream_encrypt/2, aes_ctr_stream_decrypt/2]).
 -export([ec_key_new/1, ec_key_to_term/1, term_to_ec_key/1, ec_key_generate/1]).
 -export([ecdsa_sign/2, ecdsa_sign/3, ecdsa_verify/3, ecdsa_verify/4, ecdh_compute_key/2]).
+-export([aes_gcm128_init/1, aes_gcm128_encrypt/4, aes_gcm128_decrypt/5]).
 
 -export([dh_generate_parameters/2, dh_check/1]). %% Testing see below
 
@@ -120,6 +121,7 @@
 		    srp_client_secret, srp_server_secret,
 		    ec_key_new, ec_key_to_term, term_to_ec_key, ec_key_generate,
 		    ecdsa_sign, ecdsa_verify, ecdh_compute_key,
+		    aes_gcm128_init, aes_gcm128_encrypt, aes_gcm128_decrypt,
 		    info_lib, algorithms]).
 
 -type mpint() :: binary().
@@ -747,6 +749,13 @@ aes_cfb_128_decrypt(Key, IVec, Data) ->
 
 aes_cfb_128_crypt(_Key, _IVec, _Data, _IsEncrypt) -> ?nif_stub.     
 
+%%
+%% AES in Galois Counter Mode (GCM)
+%%
+
+aes_gcm128_init(_Key) -> ?nif_stub.
+aes_gcm128_encrypt(_Ctx, _IV, _AAD, _In) -> ?nif_stub.
+aes_gcm128_decrypt(_Ctx, _IV, _AAD, _In, _Tag) -> ?nif_stub.
 
 %% 
 %% RAND - pseudo random numbers using RN_ functions in crypto lib

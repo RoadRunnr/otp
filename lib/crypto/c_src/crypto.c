@@ -51,8 +51,8 @@
 #include <openssl/rc2.h>
 #include <openssl/blowfish.h>
 #include <openssl/rand.h>
-#include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/evp.h>
 
 #include "crypto_callback.h"
 
@@ -79,6 +79,10 @@
 	&& !defined(OPENSSL_NO_ECDH) \
 	&& !defined(OPENSSL_NO_ECDSA)
 # define HAVE_EC
+#endif
+
+#if OPENSSL_VERSION_NUMBER >= 0x1000100fL
+# define HAVE_GCM
 #endif
 
 #if defined(HAVE_EC)
@@ -237,6 +241,9 @@ static ERL_NIF_TERM ecdsa_sign_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
 static ERL_NIF_TERM ecdsa_verify_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
 static ERL_NIF_TERM ecdh_compute_key(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
 
+static ERL_NIF_TERM aes_gcm128_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+static ERL_NIF_TERM aes_gcm128_encrypt(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
+static ERL_NIF_TERM aes_gcm128_decrypt(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
 
 /* helpers */
 static void init_algorithms_types(void);
@@ -361,7 +368,12 @@ static ErlNifFunc nif_funcs[] = {
     {"ec_key_generate", 1, ec_key_generate},
     {"ecdsa_sign_nif", 3, ecdsa_sign_nif},
     {"ecdsa_verify_nif", 4, ecdsa_verify_nif},
-    {"ecdh_compute_key", 2, ecdh_compute_key}
+    {"ecdh_compute_key", 2, ecdh_compute_key},
+
+    {"aes_gcm128_init", 1, aes_gcm128_init},
+    {"aes_gcm128_encrypt", 4, aes_gcm128_encrypt},
+    {"aes_gcm128_decrypt", 5, aes_gcm128_decrypt}
+
 };
 
 #if defined(HAVE_EC)
@@ -524,6 +536,12 @@ static ErlNifResourceType* res_type_ec_key;
 static void ec_key_dtor(ErlNifEnv* env, void* obj);
 #endif
 
+#if defined(HAVE_GCM)
+static ERL_NIF_TERM atom_gcm;
+static ErlNifResourceType* res_type_evp_cipher_ctx;
+static void evp_cipher_ctx_dtor(ErlNifEnv* env, void* obj);
+#endif
+
 /*
 #define PRINTF_ERR0(FMT) enif_fprintf(stderr, FMT "\n")
 #define PRINTF_ERR1(FMT, A1) enif_fprintf(stderr, FMT "\n", A1)
@@ -621,6 +639,12 @@ static int init(ErlNifEnv* env, ERL_NIF_TERM load_info)
 					      ERL_NIF_RT_CREATE, NULL);
 #endif
 
+#if defined(HAVE_GCM)
+    atom_gcm = enif_make_atom(env,"gcm");
+    res_type_evp_cipher_ctx = enif_open_resource_type(env,NULL,"crypto.EVP_CIPHER_CTX",
+						      evp_cipher_ctx_dtor,ERL_NIF_RT_CREATE, NULL);
+#endif
+
     init_digest_types(env);
     init_algorithms_types();
 
@@ -704,7 +728,7 @@ static void unload(ErlNifEnv* env, void* priv_data)
 }
 
 static int algos_cnt;
-static ERL_NIF_TERM algos[8];   /* increase when extending the list */
+static ERL_NIF_TERM algos[9];   /* increase when extending the list */
 
 static void init_algorithms_types(void)
 {
@@ -728,6 +752,10 @@ static void init_algorithms_types(void)
 #if defined(HAVE_EC)
     algos[algos_cnt++] = atom_ec;
 #endif
+#if defined(HAVE_GCM)
+    algos[algos_cnt++] = atom_gcm;
+#endif
+
 }
 
 static ERL_NIF_TERM algorithms(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -1603,6 +1631,141 @@ static ERL_NIF_TERM aes_ctr_stream_encrypt(ErlNifEnv* env, int argc, const ERL_N
     new_state_term = enif_make_tuple4(env, state_term[0], ivec2_term, ecount2_term, num2_term);
     ret = enif_make_tuple2(env, new_state_term, cipher_term);
     return ret;
+}
+
+#if defined(HAVE_GCM)
+static void evp_cipher_ctx_dtor(ErlNifEnv* env, void* obj)
+{
+    EVP_CIPHER_CTX *ctx = (EVP_CIPHER_CTX*) obj;
+
+    EVP_CIPHER_CTX_cleanup(ctx);
+}
+#endif
+
+static ERL_NIF_TERM aes_gcm128_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{/* (Key, IV) */
+#if defined(HAVE_GCM)
+    ErlNifBinary key;
+    ERL_NIF_TERM ret;
+    const EVP_CIPHER *c;
+    EVP_CIPHER_CTX *ctx;
+
+    if (!enif_inspect_binary(env, argv[0], &key) || (key.size != 16 && key.size != 32))
+	return enif_make_badarg(env);
+
+    c = (key.size == 16) ? EVP_aes_128_gcm() : EVP_aes_256_gcm();
+    ctx = enif_alloc_resource(res_type_evp_cipher_ctx, sizeof(EVP_CIPHER_CTX));
+    if (!ctx)
+	return atom_error;
+
+    EVP_CIPHER_CTX_init(ctx);
+    EVP_CipherInit_ex(ctx, c, NULL, key.data, NULL, 1);
+
+    ret = enif_make_resource(env, ctx);
+    enif_release_resource(ctx);
+
+    return ret;
+#else
+    return atom_notsup;
+#endif
+}
+
+static ERL_NIF_TERM aes_gcm128_encrypt(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{/* (Ctx,IV,AAD,In) */
+#if defined(HAVE_GCM)
+    EVP_CIPHER_CTX *ctx;
+    ErlNifBinary ivec, aad, in;
+    unsigned char *outp;
+    ERL_NIF_TERM out, out_tag;
+
+    if (!enif_get_resource(env, argv[0], res_type_evp_cipher_ctx, (void **)&ctx)
+	|| !enif_inspect_binary(env, argv[1], &ivec) || ivec.size == 0
+	|| !enif_inspect_iolist_as_binary(env, argv[2], &aad)
+	|| !enif_inspect_iolist_as_binary(env, argv[3], &in)) {
+	return enif_make_badarg(env);
+    }
+
+    /* EVP_CTRL_GCM_SET_IV_INV is normaly only permited on decrypt */
+    ctx->encrypt = 0;
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IV_FIXED, -1, ivec.data) <= 0 ||
+	EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IV_INV, ivec.size, ivec.data) <= 0)
+	return atom_error;
+
+    ctx->encrypt = 1;
+
+    if (!(outp = enif_make_new_binary(env, in.size, &out)))
+	return atom_error;
+    memcpy(outp, in.data, in.size);
+
+    if (aad.size != 0) {
+	if (EVP_Cipher(ctx, NULL, aad.data, aad.size) < 0)
+	    return atom_error;
+    }
+
+    /* encrypt */
+    if (EVP_Cipher(ctx, outp, outp, in.size) < 0)
+	return atom_error;
+
+    /* calculate the tag */
+    if (EVP_Cipher(ctx, NULL, NULL, 0) < 0)
+	return atom_error;
+
+    /* retrieve the tag */
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, enif_make_new_binary(env, 16, &out_tag)) <= 0)
+	return atom_error;
+
+    return enif_make_tuple2(env, out, out_tag);
+#else
+    return atom_notsup;
+#endif
+}
+
+static ERL_NIF_TERM aes_gcm128_decrypt(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{/* (Ctx,IV,AAD,In,Tag) */
+#if defined(HAVE_GCM)
+    EVP_CIPHER_CTX *ctx;
+    ErlNifBinary ivec, aad, in, tag;
+    unsigned char *outp;
+    ERL_NIF_TERM out;
+
+    if (!enif_get_resource(env, argv[0], res_type_evp_cipher_ctx, (void **)&ctx)
+	|| !enif_inspect_binary(env, argv[1], &ivec) || ivec.size == 0
+	|| !enif_inspect_iolist_as_binary(env, argv[2], &aad)
+	|| !enif_inspect_iolist_as_binary(env, argv[3], &in)
+	|| !enif_inspect_iolist_as_binary(env, argv[4], &tag) || tag.size != 16) {
+	return enif_make_badarg(env);
+    }
+
+    /* EVP_CTRL_GCM_SET_IV_INV is normaly only permited on decrypt */
+    ctx->encrypt = 0;
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IV_FIXED, -1, ivec.data) <= 0
+	|| EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IV_INV, ivec.size, ivec.data) <= 0
+	|| EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, tag.size, tag.data) <= 0)
+	return atom_error;
+
+    if (!(outp = enif_make_new_binary(env, in.size, &out)))
+	return atom_error;
+    memcpy(outp, in.data, in.size);
+
+    if (aad.size != 0) {
+	if (EVP_Cipher(ctx, NULL, aad.data, aad.size) < 0)
+	    return atom_error;
+    }
+
+    /* decrypt */
+    if (EVP_Cipher(ctx, outp, outp, in.size) < 0)
+	return atom_error;
+
+    /* calculate and check the tag */
+    if (EVP_Cipher(ctx, NULL, NULL, 0) < 0)
+	return atom_error;
+
+    return out;
+#else
+    return atom_notsup;
+#endif
 }
 
 static ERL_NIF_TERM rand_bytes_1(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])

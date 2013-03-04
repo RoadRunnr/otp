@@ -77,6 +77,12 @@
 	  ANS X9.62-2005: The Elliptic Curve Digital Signature
           Algorithm (ECDSA), 2005.</p>
       </item>
+      <item>
+        <p>gcm: Dworkin, M., "Recommendation for Block Cipher Modes of
+        Operation: Galois/Counter Mode (GCM) and GMAC",
+        National Institute of Standards and Technology SP 800-
+        38D, November 2007.</p>
+      </item>
     </list>
     <p>The above publications can be found at <url href="http://csrc.nist.gov/publications">NIST publications</url>, at <url href="http://www.ietf.org">IETF</url>.
       </p>
@@ -898,6 +904,48 @@ Mpint() = <![CDATA[<<ByteLen:32/integer-big, Bytes:ByteLen/binary>>]]>
         encryption state that must be passed to the next call to <c>aes_ctr_stream_encrypt</c>.
         <c>Text</c> is the decrypted data.</p>
       </desc>
+    </func>
+    <func>
+      <name>aes_gcm128_init(Key) -> Context</name>
+      <fsummary>Initialize an AES in Galois/Counter mode cipher context</fsummary>
+      <type>
+        <v>Key = Text = iolist() | binary()</v>
+      </type>
+      <desc>
+	<p>Initialize an AES in Galois/Counter mode cipher OpenSSL context for later use in
+	encryption and decryption operations. <c>Key</c> is the AES key and must be either
+        128, 192 or 256 bits long.</p>
+    </desc>
+    </func>
+    <func>
+      <name>aes_gcm128_encrypt(Ctx, IVec, AAD, Text) -> {Cipher, Tag}</name>
+      <fsummary>Encrypt <c>Text</c> with according to AES in Galois/Counter mode</fsummary>
+      <type>
+        <v>Ctx = resource()</v>
+	<v>Text = iolist() | binary()</v>
+        <v>IVec = AAD = Cipher = Tag = binary()</v>
+      </type>
+      <desc>
+      <p>Encrypts <c>Text</c> according to AES in Galois/Counter mode (GCM). <c>Text</c>
+        can be any number of bytes. <c>IVec</c> is an arbitrary initializing vector of 128 bits
+        (16 bytes). <c>AAD</c> is an optional binary of 13 bytes that is authenticated together
+        with the plain text</p>
+    </desc>
+    </func>
+    <func>
+      <name>aes_gcm128_decrypt(Ctx, IVec, AAD, Cipher, Tag) -> Text | 'error'</name>
+      <fsummary>Decrypt <c>Text</c> with according to AES in Galois/Counter mode</fsummary>
+      <type>
+        <v>Ctx = resource()</v>
+	<v>Text = iolist() | binary()</v>
+        <v>IVec = AAD = Cipher = Tag = binary()</v>
+      </type>
+      <desc>
+      <p>Decrypts <c>Text</c> according to AES in Galois/Counter mode (GCM). <c>Text</c>
+        can be any number of bytes. <c>IVec</c> is an arbitrary initializing vector of 128 bits
+        (16 bytes). <c>AAD</c> is an optional binary of 13 bytes that is authenticated together
+        with the plain text</p>
+    </desc>
     </func>
     <func>
       <name>erlint(Mpint) -> N</name>

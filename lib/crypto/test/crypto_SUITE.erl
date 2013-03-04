@@ -64,6 +64,7 @@
 	 aes_cbc_iter/1,
 	 aes_ctr/1,
 	 aes_ctr_stream/1,
+	 aes_gcm/1,
 	 mod_exp_test/1,
 	 rand_uniform_test/1,
 	 strong_rand_test/1,
@@ -102,7 +103,7 @@ groups() ->
        hmac_rfc4231_sha384, hmac_rfc4231_sha512,
        des_cbc, aes_cfb, aes_cbc,
        des_cfb, des_cfb_iter, des3_cbc, des3_cfb, rc2_cbc,
-       aes_cbc_iter, aes_ctr, aes_ctr_stream, des_cbc_iter, des_ecb,
+       aes_cbc_iter, aes_ctr, aes_ctr_stream, aes_gcm, des_cbc_iter, des_ecb,
        rand_uniform_test, strong_rand_test,
        rsa_verify_test, dsa_verify_test, rsa_sign_test,
        rsa_sign_hash_test, dsa_sign_test, dsa_sign_hash_test,
@@ -1429,6 +1430,63 @@ aes_ctr_stream_do_iter(State, [Plain|Rest], Acc, CipherFun) ->
     ?line P = hexstr2bin(Plain),
     ?line {S2, C} = CipherFun(State, P),
     aes_ctr_stream_do_iter(S2, Rest, [C | Acc], CipherFun).
+
+aes_gcm(doc) -> "GCM";
+aes_gcm(Config) when is_list(Config) ->
+    %% Sample data from "The Galois/Counter Mode of Operation (GCM)"
+    if_supported(gcm, fun() -> aes_gcm_do() end).
+
+aes_gcm_do() ->
+    K1 = hexstr2bin("00000000000000000000000000000000"),
+    P1 = hexstr2bin(""),
+    IV1 = hexstr2bin("000000000000000000000000"),
+    A1 = hexstr2bin(""),
+    C1 = hexstr2bin(""),
+    T1 = hexstr2bin("58e2fccefa7e3061367f1d57a4e7455a"),
+    aes_gcm_crypt_do(K1, P1, IV1, A1, C1, T1),
+
+    K2 = hexstr2bin("00000000000000000000000000000000"),
+    P2 = hexstr2bin("00000000000000000000000000000000"),
+    IV2 = hexstr2bin("000000000000000000000000"),
+    A2 = hexstr2bin(""),
+    C2 = hexstr2bin("0388dace60b6a392f328c2b971b2fe78"),
+    T2 = hexstr2bin("ab6e47d42cec13bdf53a67b21257bddf"),
+    aes_gcm_crypt_do(K2, P2, IV2, A2, C2, T2),
+
+    K3 = hexstr2bin("feffe9928665731c6d6a8f9467308308"),
+    P3 = hexstr2bin("d9313225f88406e5a55909c5aff5269a"
+		    "86a7a9531534f7da2e4c303d8a318a72"
+		    "1c3c0c95956809532fcf0e2449a6b525"
+		    "b16aedf5aa0de657ba637b391aafd255"),
+    IV3 = hexstr2bin("cafebabefacedbaddecaf888"),
+    A3 = hexstr2bin(""),
+    C3 = hexstr2bin("42831ec2217774244b7221b784d0d49c"
+		    "e3aa212f2c02a4e035c17e2329aca12e"
+		    "21d514b25466931c7d8f6a5aac84aa05"
+		    "1ba30b396a0aac973d58e091473f5985"),
+    T3 = hexstr2bin("4d5c2af327cd64a62cf35abd2ba6fab4"),
+    aes_gcm_crypt_do(K3, P3, IV3, A3, C3, T3),
+
+    K4 = hexstr2bin("feffe9928665731c6d6a8f9467308308"),
+    P4 = hexstr2bin("d9313225f88406e5a55909c5aff5269a"
+		    "86a7a9531534f7da2e4c303d8a318a72"
+		    "1c3c0c95956809532fcf0e2449a6b525"
+		    "b16aedf5aa0de657ba637b39"),
+    IV4 = hexstr2bin("cafebabefacedbaddecaf888"),
+    A4 = hexstr2bin("feedfacedeadbeeffeedfacedeadbeef"
+		    "abaddad2"),
+    C4 = hexstr2bin("42831ec2217774244b7221b784d0d49c"
+		    "e3aa212f2c02a4e035c17e2329aca12e"
+		    "21d514b25466931c7d8f6a5aac84aa05"
+		    "1ba30b396a0aac973d58e091"),
+    T4 = hexstr2bin("5bc94fbc3221a5db94fae95ae7121a47"),
+    aes_gcm_crypt_do(K4, P4, IV4, A4, C4, T4).
+
+aes_gcm_crypt_do(Key, PlainText, IV, AAD, CipherText, Tag) ->
+    EncCtx = crypto:aes_gcm128_init(Key),
+    ?line m({CipherText, Tag}, crypto:aes_gcm128_encrypt(EncCtx, IV, AAD, PlainText)),
+    DecCtx = crypto:aes_gcm128_init(Key),
+    ?line m(PlainText, crypto:aes_gcm128_decrypt(DecCtx, IV, AAD, CipherText, Tag)).
 
 %%
 %%
