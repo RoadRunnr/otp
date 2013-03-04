@@ -62,6 +62,7 @@ all() ->
      {group, rc2_cbc},
      {group, rc4}, 
      {group, aes_ctr},
+     {group, aes_gcm},
      mod_pow,
      exor,
      rand_uniform
@@ -101,6 +102,7 @@ groups() ->
      {blowfish_ofb64,[], [block]},
      {rc4, [], [stream]}, 
      {aes_ctr, [], [stream]}
+     {aes_gcm, [], [aead]}
     ].
 
 %%-------------------------------------------------------------------
@@ -202,6 +204,16 @@ stream(Config) when is_list(Config) ->
     lists:foreach(fun stream_cipher/1, Streams),
     lists:foreach(fun stream_cipher/1, stream_iolistify(Streams)),
     lists:foreach(fun stream_cipher_incment/1, stream_iolistify(Streams)).
+
+%%--------------------------------------------------------------------
+aead() ->
+      [{doc, "Test AEAD ciphers"}].
+aead(Config) when is_list(Config) ->
+    AEADs = lazy_eval(proplists:get_value(aead, Config)),
+
+    lists:foreach(fun aead_cipher/1, AEADs).
+    %% lists:foreach(fun aead_cipher/1, aead_iolistify(AEADs)),
+    %% lists:foreach(fun aead_cipher_incment/1, aead_iolistify(AEADs)).
 
 %%-------------------------------------------------------------------- 
 sign_verify() ->
@@ -406,7 +418,19 @@ stream_cipher_incment(_State, OrigState, [], Acc, Plain) ->
 stream_cipher_incment(State0, OrigState, [PlainText | PlainTexts], Acc, Plain) ->
     {State, CipherText} = crypto:stream_encrypt(State0, PlainText),
     stream_cipher_incment(State, OrigState, PlainTexts, [CipherText | Acc], Plain).
-	
+
+aead_cipher({Key, PlainText, IV, AAD, CipherText, Tag}) ->
+    Plain = iolist_to_binary(PlainText),
+    EncState = crypto:aead_init(Type, Key),
+    {CipherText, CipherTag} = crypto:aead_encrypt(EncState, IV, AAD, PlainText),
+    DecState = crypto:aead_init(Type, Key),
+    case crypto:aead_decrypt(DecState, IV, AAD, CipherText, CipherTag) of
+	{_, PlainText} ->
+	    ok;
+	Other ->
+	    ct:fail({{crypto, aead_decrypt, [State, CipherText]}, {expected, PlainText}, {got, Other}})
+    end;
+
 do_sign_verify({Type, Hash, Public, Private, Msg}) ->
     Signature = crypto:sign(Type, Hash, Msg, Private),
     case crypto:verify(Type, Hash, Msg, Signature, Public) of
@@ -749,6 +773,9 @@ group_config(rc4, Config) ->
 group_config(aes_ctr, Config) ->
     Stream = aes_ctr(),
     [{stream, Stream} | Config];
+group_config(aes_gcm, Config) ->
+    AEAD = aes_gcm(),
+    [{aead, AEAD} | Config];
 group_config(_, Config) ->
     Config.
 
@@ -1376,6 +1403,52 @@ aes_ctr() ->
        {aes_ctr,  hexstr2bin("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4"),
 	hexstr2bin("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"),
 	long_msg()}
+    ].
+
+
+%% AES GCM test vectors from http://csrc.nist.gov/groups/ST/toolkit/BCM/documents/proposedmodes/gcm/gcm-spec.pdf
+aes_gcm() ->
+    [
+     {aes_gcm, hexstr2bin("00000000000000000000000000000000"),
+      hexstr2bin(""),
+      hexstr2bin("000000000000000000000000"),
+      hexstr2bin(""),
+      hexstr2bin(""),
+      hexstr2bin("58e2fccefa7e3061367f1d57a4e7455a")},
+
+     {aes_gcm, hexstr2bin("00000000000000000000000000000000"),
+      hexstr2bin("00000000000000000000000000000000"),
+      hexstr2bin("000000000000000000000000"),
+      hexstr2bin(""),
+      hexstr2bin("0388dace60b6a392f328c2b971b2fe78"),
+      hexstr2bin("ab6e47d42cec13bdf53a67b21257bddf")},
+
+     {aes_gcm, hexstr2bin("feffe9928665731c6d6a8f9467308308"),
+      hexstr2bin("d9313225f88406e5a55909c5aff5269a"
+		 "86a7a9531534f7da2e4c303d8a318a72"
+		 "1c3c0c95956809532fcf0e2449a6b525"
+		 "b16aedf5aa0de657ba637b391aafd255"),
+      hexstr2bin("cafebabefacedbaddecaf888"),
+      hexstr2bin(""),
+      hexstr2bin("42831ec2217774244b7221b784d0d49c"
+		 "e3aa212f2c02a4e035c17e2329aca12e"
+		 "21d514b25466931c7d8f6a5aac84aa05"
+		 "1ba30b396a0aac973d58e091473f5985"),
+      hexstr2bin("4d5c2af327cd64a62cf35abd2ba6fab4")},
+
+     {aes_gcm, hexstr2bin("feffe9928665731c6d6a8f9467308308"),
+      hexstr2bin("d9313225f88406e5a55909c5aff5269a"
+		 "86a7a9531534f7da2e4c303d8a318a72"
+		 "1c3c0c95956809532fcf0e2449a6b525"
+		 "b16aedf5aa0de657ba637b39"),
+      hexstr2bin("cafebabefacedbaddecaf888"),
+      hexstr2bin("feedfacedeadbeeffeedfacedeadbeef"
+		 "abaddad2"),
+      hexstr2bin("42831ec2217774244b7221b784d0d49c"
+		 "e3aa212f2c02a4e035c17e2329aca12e"
+		 "21d514b25466931c7d8f6a5aac84aa05"
+		 "1ba30b396a0aac973d58e091"),
+      hexstr2bin("5bc94fbc3221a5db94fae95ae7121a47")}
     ].
 
 rsa_plain() ->

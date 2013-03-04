@@ -31,6 +31,7 @@
 -export([block_encrypt/3, block_decrypt/3, block_encrypt/4, block_decrypt/4]).
 -export([next_iv/2, next_iv/3]).
 -export([stream_init/2, stream_init/3, stream_encrypt/2, stream_decrypt/2]).
+-export([aead_init/2, aead_encrypt/4, aead_decrypt/5]).
 -export([public_encrypt/4, private_decrypt/4]).
 -export([private_encrypt/4, public_decrypt/4]).
 -export([dh_generate_parameters/2, dh_check/1]). %% Testing see
@@ -1190,6 +1191,25 @@ aes_cfb_128_decrypt(Key, IVec, Data) ->
 
 aes_cfb_128_crypt(_Key, _IVec, _Data, _IsEncrypt) -> ?nif_stub.     
 
+%%
+%% AEAD mode
+%%
+
+aead_init(aes_gcm, Key) ->
+    {aes_gcm, aes_gcm128_init(Key)}.
+
+aead_encrypt({aes_gcm, Ctx}, IV, AAD, Data) ->
+    aes_gcm128_encrypt(Ctx, IV, AAD, Data).
+
+aead_decrypt({aes_gcm, Ctx}, IV, AAD, Data, Tag) ->
+    aes_gcm128_decrypt(Ctx, IV, AAD, Data, Tag).
+
+%%
+%% AES - in Galois/Counter Mode (GCM)
+%%
+aes_gcm128_init(_Key) -> ?nif_stub.
+aes_gcm128_encrypt(_Ctx, _IV, _AAD, _In) -> ?nif_stub.
+aes_gcm128_decrypt(_Ctx, _IV, _AAD, _In, _Tag) -> ?nif_stub.
 
 %%
 %% DES - in cipher block chaining mode (CBC)
@@ -1813,6 +1833,7 @@ mod_exp_nif(_Base,_Exp,_Mod,_bin_hdr) -> ?nif_stub.
 		    dh_generate_key, dh_compute_key,
 		    %%
 		    stream_init, stream_encrypt, stream_decrypt,
+		    aead_init, aead_encrypt, aead_decrypt,
 		    %% deprecated
 		    rc4_encrypt, rc4_set_key, rc4_encrypt_with_state,
 		    aes_ctr_encrypt, aes_ctr_decrypt,

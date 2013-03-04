@@ -53,6 +53,12 @@
       <item>
         <p><url href="http://www.ietf.org/rfc/rfc2945.txt"> Secure Remote Password Protocol (SRP - RFC 2945) </url></p>
       </item>
+      <item>
+        <p>gcm: Dworkin, M., "Recommendation for Block Cipher Modes of
+        Operation: Galois/Counter Mode (GCM) and GMAC",
+        National Institute of Standards and Technology SP 800-
+        38D, November 2007.</p>
+      </item>
     </list>
   </description>
 
@@ -694,6 +700,52 @@
 	<c>PlainText</c> can be any number of bytes. The initial <c>State</c> is created using
         <seealso marker="#stream_init-2">stream_init</seealso>.
 	<c>NewState</c> must be passed into the next call to <c>stream_encrypt</c>.</p>
+      </desc>
+    </func>
+
+
+    <func>
+      <name>aead_init(Type, Key) -> Context</name>
+      <fsummary>Initialize an AES in Galois/Counter mode cipher context</fsummary>
+      <type>
+	<v>Type = aes_gcm </v>
+        <v>Context = opaque() </v>
+        <v>Key = iodata()</v>
+      </type>
+      <desc>
+	<p>Initialize the state for a AEAD cipher context for later use in
+	encryption and decryption operations.
+	For aes_gcm, <c>Key</c> must be either 128, 192 or 256 bits long.</p>
+    </desc>
+    </func>
+    <func>
+      <name>aead_encrypt(Ctx, IVec, AAD, Text) -> {Cipher, Tag}</name>
+      <fsummary>Encrypt <c>Text</c> in AEAD cipher mode</fsummary>
+      <type>
+        <v>Ctx = opaque()</v>
+	<v>Text = iolist() | binary()</v>
+        <v>IVec = AAD = Cipher = Tag = binary()</v>
+      </type>
+      <desc>
+      <p>Encrypts <c>Text</c> in AEAD mode. <c>Text</c>
+        can be any number of bytes. <c>IVec</c> is an arbitrary initializing vector of 128 bits
+        (16 bytes). <c>AAD</c> is an optional binary of 13 bytes that is authenticated together
+        with the plain text</p>
+    </desc>
+    </func>
+    <func>
+      <name>aead_decrypt(Ctx, IVec, AAD, Cipher, Tag) -> Text | 'error'</name>
+      <fsummary>Decrypt <c>Text</c> in AEAD cipher mode</fsummary>
+      <type>
+        <v>Ctx = resource()</v>
+	<v>Text = iolist() | binary()</v>
+        <v>IVec = AAD = Cipher = Tag = binary()</v>
+      </type>
+      <desc>
+      <p>Decrypts <c>Text</c> in AEAD mode. <c>Text</c>
+        can be any number of bytes. <c>IVec</c> is an arbitrary initializing vector of 128 bits
+        (16 bytes). <c>AAD</c> is an optional binary of 13 bytes that is authenticated together
+        with the plain text</p>
       </desc>
     </func>
 
