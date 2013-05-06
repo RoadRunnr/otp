@@ -74,6 +74,7 @@
 -define(CLIENT_HELLO, 1).
 -define(CLIENT_HELLO_V2, 3).
 -define(SERVER_HELLO, 2).
+-define(HELLO_VERIFY_REQUEST, 3).
 -define(CERTIFICATE, 11).
 -define(SERVER_KEY_EXCHANGE, 12).
 -define(CERTIFICATE_REQUEST, 13).
@@ -97,6 +98,7 @@
 	  client_version,
 	  random,             
 	  session_id,         % opaque SessionID<0..32>
+	  cookie,             % opaque cookie<0..32>
 	  cipher_suites,      % cipher_suites<2..2^16-1>
 	  compression_methods, % compression_methods<1..2^8-1>,
 	  renegotiation_info,
@@ -118,6 +120,11 @@
 	  ec_point_formats,    % supported ec point formats
 	  elliptic_curves,     % supported elliptic curver
 	  next_protocol_negotiation = undefined % [binary()]
+	 }).
+
+-record(hello_verify_request, {
+	  server_version,
+	  cookie              % opaque cookie<0..32>
 	 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

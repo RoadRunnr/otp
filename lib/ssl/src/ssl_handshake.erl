@@ -31,14 +31,16 @@
 -include("ssl_srp.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
--export([master_secret/4, client_hello/8, server_hello/7, hello/4,
-	 hello_request/0, certify/7, certificate/4,
+-export([master_secret/4, client_hello/9, server_hello/7, hello/4,
+	 hello_verify_request/1, hello_request/0, certify/7, certificate/4,
 	 client_certificate_verify/6, certificate_verify/6, verify_signature/5,
 	 certificate_request/3, key_exchange/3, server_key_exchange_hash/2,
 	 finished/5, verify_connection/6, get_tls_handshake/3,
+	 get_dtls_handshake/2, dtls_handshake_new_flight/1, dtls_handshake_new_epoch/1,
 	 decode_client_key/3, decode_server_key/3, server_hello_done/0,
-	 encode_handshake/2, init_handshake_history/0, update_handshake_history/2,
+	 encode_handshake/4, init_handshake_history/0, update_handshake_history/2,
 	 decrypt_premaster_secret/2, prf/5, next_protocol/1]).
+-export([hexdump/1, dump_connection_state/2]).
 
 -export([dec_hello_extensions/2]).
 
@@ -49,17 +51,19 @@
 
 -define(NAMED_CURVE_TYPE, 3).
 
+-record(dtls_hs_state, {current_read_seq, starting_read_seq, highest_record_seq, fragments, completed}).
+
 %%====================================================================
 %% Internal application API
 %%====================================================================
 %%--------------------------------------------------------------------
--spec client_hello(host(), inet:port_number(), #connection_states{},
+-spec client_hello(host(), inet:port_number(), binary(), #connection_states{},
 		   #ssl_options{}, integer(), atom(), boolean(), der_cert()) ->
 			  #client_hello{}.
 %%
 %% Description: Creates a client hello message.
 %%--------------------------------------------------------------------
-client_hello(Host, Port, ConnectionStates,
+client_hello(Host, Port, Cookie, ConnectionStates,
 	     #ssl_options{versions = Versions,
 			  ciphers = UserSuites
 			 } = SslOpts,
@@ -76,6 +80,7 @@ client_hello(Host, Port, ConnectionStates,
     #client_hello{session_id = Id,
 		  client_version = Version,
 		  cipher_suites = cipher_suites(Ciphers, Renegotiation),
+		  cookie = Cookie,
 		  compression_methods = ssl_record:compressions(),
 		  random = SecParams#security_parameters.client_random,
 
@@ -123,6 +128,15 @@ server_hello(SessionId, Version, ConnectionStates, Renegotiation,
 		  elliptic_curves = EllipticCurves,
 		  next_protocol_negotiation = encode_protocols_advertised_on_server(ProtocolsAdvertisedOnServer)
 		 }.
+
+%%--------------------------------------------------------------------
+-spec hello_verify_request(binary()) -> #hello_verify_request{}.
+%%
+%% Description: Creates a hello verify request message sent by server to
+%% verify client
+%%--------------------------------------------------------------------
+hello_verify_request(Cookie) ->
+    #hello_verify_request{server_version = {254, 255}, cookie = Cookie}.
 
 %%--------------------------------------------------------------------
 -spec hello_request() -> #hello_request{}.
@@ -183,6 +197,9 @@ hello(#client_hello{client_version = ClientVersion, random = Random,
 		   secure_renegotiate = SecureRenegotation} = SslOpts,
       {Port, Session0, Cache, CacheCb, ConnectionStates0, Cert}, Renegotiation) ->
 %% TODO: select hash and signature algorithm
+%%    io:format("Cs0: ~p~n", [ConnectionStates0]),
+    ConnectionStates1 = ssl_record:init_connection_state_seq(ClientVersion, ConnectionStates0),
+%%    io:format("Cs1: ~p~n", [ConnectionStates1]),
     Version = select_version(ClientVersion, Versions),
     case ssl_record:is_acceptable_version(Version, Versions) of
 	true ->
@@ -197,17 +214,17 @@ hello(#client_hello{client_version = ClientVersion, random = Random,
 		    ?ALERT_REC(?FATAL, ?INSUFFICIENT_SECURITY);
 		_ ->
 		    Session = handle_srp_info(SRP, Session1),
-		    case handle_renegotiation_info(server, Info, ConnectionStates0,
+		    case handle_renegotiation_info(server, Info, ConnectionStates1,
 						   Renegotiation, SecureRenegotation, 
 						   CipherSuites) of
-			{ok, ConnectionStates1} ->
+			{ok, ConnectionStates2} ->
 			    ConnectionStates =
 				hello_pending_connection_states(server, 
 								Version,
 								CipherSuite,
 								Random, 
 								Compression,
-								ConnectionStates1),
+								ConnectionStates2),
 				case handle_next_protocol_on_server(Hello, Renegotiation, SslOpts) of
 					#alert{} = Alert ->
 						Alert;
@@ -330,6 +347,7 @@ client_certificate_verify(OwnCert, MasterSecret, Version,
 	false ->
 	    Hashes =
 		calc_certificate_verify(Version, HashAlgo, MasterSecret, Handshake),
+	    io:format("HashAlgo: ~p, SignAlgo: ~p~n", [HashAlgo, SignAlgo]),
 	    Signed = digitally_signed(Version, Hashes, HashAlgo, PrivateKey),
 	    #certificate_verify{signature = Signed, hashsign_algorithm = {HashAlgo, SignAlgo}}
     end.
@@ -512,11 +530,65 @@ enc_server_key_exchange(Version, Params, {HashAlgo, SignAlgo},
 						     ServerRandom/binary,
 						     EncParams/binary>>),
 	    Signature = digitally_signed(Version, Hash, HashAlgo, PrivateKey),
+	    %% io:format("Hash: ~w~n", [HashAlgo]),
+	    %% io:format("Sign: ~w~n", [SignAlgo]),
+	    %% io:format("Private Key:~n~p~n", [PrivateKey]),
+	    %% io:format("Client Random:~n~s~n", [hexdump(ClientRandom)]),
+	    %% io:format("Server Random:~n~s~n", [hexdump(ServerRandom)]),
+	    %% io:format("Params:~n~p~n", [Params]),
+	    %% io:format("EncParams:~n~s~n", [hexdump(EncParams)]),
+	    %% io:format("Signature:~n~s~n", [hexdump(Signature)]),
+
 	    #server_key_params{params = Params,
 			       params_bin = EncParams,
 			       hashsign = {HashAlgo, SignAlgo},
 			       signature = Signature}
     end.
+
+hexdump(Line, Part) ->
+	L0 = [io_lib:format(" ~2.16.0B", [X]) || <<X:8>> <= Part],
+	L1 = lists:flatten(L0),
+	io_lib:format("~4.16.0B:~s~n", [Line * 16, L0]).
+	
+hexdump(Line, <<>>, Out) ->
+	lists:flatten(lists:reverse(Out));
+hexdump(Line, <<Part:16/bytes, Rest/binary>>, Out) ->
+	L1 = hexdump(Line, Part),
+	hexdump(Line + 1, Rest, [L1|Out]);
+hexdump(Line, <<Part/binary>>, Out) ->
+	L1 = hexdump(Line, Part),
+	hexdump(Line + 1, <<>>, [L1|Out]).
+
+hexdump(List) when is_list(List) ->
+	hexdump(0, list_to_binary(List), []);
+hexdump(Bin) when is_binary(Bin)->
+	hexdump(0, Bin, []);
+hexdump(Atom) when is_atom(Atom) ->
+	io_lib:format("~p", [Atom]).
+
+dump_connection_state(Tag,
+		      #connection_state{
+			epoch = Epoch,
+			sequence_number = SeqNo,
+			mac_secret = MAC,
+			cipher_state = CipherState,
+			security_parameters = #security_parameters{
+			  master_secret = MasterSecret
+			 }}) ->
+    io:format("connection_state: ~s, ~w:~w~n", [Tag, Epoch, SeqNo]),
+    io:format("mac_secret:~n~s~n", [hexdump(MAC)]),
+    io:format("master_secret:~n~s~n", [hexdump(MasterSecret)]),
+    case CipherState of
+	#cipher_state{iv = IV, key = Key} ->
+	    io:format("key:~n~s~n", [hexdump(Key)]),
+	    io:format("iv:~n~s~n", [hexdump(IV)]);
+	_ ->
+	    io:format("cipher_state: ~p~n", [CipherState])
+    end,
+    ok;
+
+dump_connection_state(Tag, CS) ->
+    io:format("connection_state raw: ~s~n~p~n", [Tag, CS]).
 
 %%--------------------------------------------------------------------
 -spec master_secret(tls_version(), #session{} | binary(), #connection_states{},
@@ -548,6 +620,7 @@ master_secret(Version, PremasterSecret, ConnectionStates, Role) ->
     #security_parameters{prf_algorithm = PrfAlgo,
 			 client_random = ClientRandom,
 			 server_random = ServerRandom} = SecParams, 
+	io:format("SecParams: ~p~n", [SecParams]),
     try master_secret(Version, 
 		      calc_master_secret(Version,PrfAlgo,PremasterSecret,
 				       ClientRandom, ServerRandom),
@@ -585,10 +658,12 @@ finished(Version, Role, PrfAlgo, MasterSecret, {Handshake, _}) -> % use the curr
 verify_connection(Version, #finished{verify_data = Data}, 
 		  Role, PrfAlgo, MasterSecret, {_, Handshake}) ->
     %% use the previous hashes
+    %% io:format("check verify:~n~s~n", [hexdump(Data)]),
     case calc_finished(Version, Role, PrfAlgo, MasterSecret, Handshake) of
 	Data ->
 	    verified;
-	_ ->
+	D ->
+	    %% io:format("check verify got:~n~s~n", [hexdump(D)]),
 	    ?ALERT_REC(?FATAL, ?DECRYPT_ERROR)
     end.
 %%--------------------------------------------------------------------
@@ -600,14 +675,70 @@ server_hello_done() ->
     #server_hello_done{}.
 
 %%--------------------------------------------------------------------
--spec encode_handshake(tls_handshake(), tls_version()) -> iolist().
+-spec encode_handshake(tls_handshake(), tls_version(), integer(), integer()) -> {iolist(),iolist()}.
 %%     
 %% Description: Encode a handshake packet to binary
 %%--------------------------------------------------------------------x
-encode_handshake(Package, Version) ->
+encode_handshake(Package, Version = {254, _}, MsgSeq, Mss) ->
+    io:format("encode_handshake DTLS: ~w, ~w~n", [MsgSeq, element(1, Package)]),
     {MsgType, Bin} = enc_hs(Package, Version),
     Len = byte_size(Bin),
-    [MsgType, ?uint24(Len), Bin].
+    HsHistory = [MsgType, ?uint24(Len), ?uint16(MsgSeq), ?uint24(0), ?uint24(Len), Bin],
+    BinMsg = dtls_split_handshake(Mss, MsgType, Len, MsgSeq, Bin, 0, []),
+    {HsHistory, BinMsg};
+
+encode_handshake(Package, Version, _MsgSeq, _Mss) ->
+    io:format("encode_handshake: ~p~n", [Package]),
+    {MsgType, Bin} = enc_hs(Package, Version),
+    Len = byte_size(Bin),
+    BinMsg = [MsgType, ?uint24(Len), Bin],
+    {BinMsg, [BinMsg]}.
+
+dtls_split_handshake(Mss, MsgType, Len, MsgSeq, Bin, Offset, Acc)
+  when byte_size(Bin) + 12 < Mss ->
+    FragmentLen = byte_size(Bin),
+    BinMsg = [MsgType, ?uint24(Len), ?uint16(MsgSeq), ?uint24(Offset), ?uint24(FragmentLen), Bin],
+    lists:reverse([BinMsg|Acc]);
+dtls_split_handshake(Mss, MsgType, Len, MsgSeq, Bin, Offset, Acc) ->
+    FragmentLen = Mss - 12,
+    <<Fragment:FragmentLen/bytes, Rest/binary>> = Bin,
+    BinMsg = [MsgType, ?uint24(Len), ?uint16(MsgSeq), ?uint24(Offset), ?uint24(FragmentLen), Fragment],
+    dtls_split_handshake(Mss, MsgType, Len, MsgSeq, Rest, Offset + FragmentLen, [BinMsg|Acc]).
+
+%%--------------------------------------------------------------------
+-spec get_dtls_handshake(#ssl_tls{}, #dtls_hs_state{} | binary()) ->
+     {[tls_handshake()], #ssl_tls{}}.
+%%
+%% Description: Given a DTLS state and new data from ssl_record, collects
+%% and returns it as a list of handshake messages, also returns a new
+%% DTLS state
+%%--------------------------------------------------------------------
+%% get_dtls_handshake(Record, <<>>) ->
+%%     get_dtls_handshake_aux(Record, dtls_hs_state_init());
+get_dtls_handshake(Record, HsState) ->
+    get_dtls_handshake_aux(Record, HsState).
+
+%%--------------------------------------------------------------------
+-spec dtls_handshake_new_epoch(#dtls_hs_state{}) -> #dtls_hs_state{}.
+%%
+%% Description: Reset the DTLS decoder state for a new Epoch
+%%--------------------------------------------------------------------
+%% dtls_handshake_new_epoch(<<>>) ->
+%%     dtls_hs_state_init();
+dtls_handshake_new_epoch(HsState) ->
+    HsState#dtls_hs_state{highest_record_seq = 0,
+			  starting_read_seq = HsState#dtls_hs_state.current_read_seq,
+			  fragments = gb_trees:empty(), completed = []}.
+
+%%--------------------------------------------------------------------
+-spec dtls_handshake_new_flight(integer() | undefined) -> #dtls_hs_state{}.
+%%
+%% Description: Init the DTLS decoder state for a new Flight
+dtls_handshake_new_flight(ExpectedReadReq) ->
+    #dtls_hs_state{current_read_seq = ExpectedReadReq,
+		   highest_record_seq = 0,
+		   starting_read_seq = 0,
+		   fragments = gb_trees:empty(), completed = []}.
 
 %%--------------------------------------------------------------------
 -spec get_tls_handshake(tls_version(), binary(), binary() | iolist()) ->
@@ -618,8 +749,10 @@ encode_handshake(Package, Version) ->
 %% data.
 %%--------------------------------------------------------------------
 get_tls_handshake(Version, Data, <<>>) ->
+    io:format("get_tls_handshake: stream~n"),
     get_tls_handshake_aux(Version, Data, []);
 get_tls_handshake(Version, Data, Buffer) ->
+    io:format("get_tls_handshake: stream~n"),
     get_tls_handshake_aux(Version, list_to_binary([Buffer, Data]), []).
 
 %%--------------------------------------------------------------------
@@ -634,6 +767,7 @@ get_tls_handshake(Version, Data, Buffer) ->
 %% Description: Decode client_key data and return appropriate type
 %%--------------------------------------------------------------------
 decode_client_key(ClientKey, Type, Version) ->
+    io:format("decode_client_key: ~w, ~w, ~w, ~w~n", [ClientKey, Type, Version, key_exchange_alg(Type)]),
     dec_client_key(ClientKey, key_exchange_alg(Type), Version).
 
 %%--------------------------------------------------------------------
@@ -665,7 +799,7 @@ update_handshake_history(Handshake, % special-case SSL2 client hello
 			   ?UINT16(CSLength), ?UINT16(0),
 			   ?UINT16(CDLength),
 			   CipherSuites:CSLength/binary,
-			   ChallengeData:CDLength/binary>>) ->
+			   ChallengeData:CDLength/binary>>) when Major == 2 ->
     update_handshake_history(Handshake,
 			     <<?CLIENT_HELLO, ?BYTE(Major), ?BYTE(Minor),
 			       ?UINT16(CSLength), ?UINT16(0),
@@ -719,6 +853,7 @@ prf({3,_N}, Secret, Label, Seed, WantedLength) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
+
 get_tls_handshake_aux(Version, <<?BYTE(Type), ?UINT24(Length),
 			Body:Length/binary,Rest/binary>>, Acc) ->
     Raw = <<?BYTE(Type), ?UINT24(Length), Body/binary>>,
@@ -726,6 +861,222 @@ get_tls_handshake_aux(Version, <<?BYTE(Type), ?UINT24(Length),
     get_tls_handshake_aux(Version, Rest, [{H,Raw} | Acc]);
 get_tls_handshake_aux(_Version, Data, Acc) ->
     {lists:reverse(Acc), Data}.
+
+get_dtls_handshake_aux(#ssl_tls{version = Version,
+				sequence = SeqNo,
+				fragment = Data}, HsState) ->
+    get_dtls_handshake_aux(Version, SeqNo, Data, HsState).
+
+get_dtls_handshake_aux(Version, SeqNo,
+		       <<?BYTE(Type), ?UINT24(Length),
+			 ?UINT16(MessageSeq),
+			 ?UINT24(FragmentOffset), ?UINT24(FragmentLength),
+			 Body:FragmentLength/binary, Rest/binary>>,
+		       HsState0 = #dtls_hs_state{current_read_seq = CurrentReadSeq}) ->
+    io:format("MessageSeq: ~w, CurrentReadSeq: ~w, FragmentOffset, ~w, FragmentLength: ~w~n", [MessageSeq, CurrentReadSeq, FragmentOffset, FragmentLength]),
+    %% case reassemble_dtls_fragment(Type, Length, MessageSeq,
+    %% 				  FragmentOffset, FragmentLength,
+    %% 				  Body, HsState0) of
+    R = reassemble_dtls_fragment(SeqNo, Type, Length, MessageSeq,
+				 FragmentOffset, FragmentLength,
+				 Body, HsState0),
+%%    io:format("reassemble: ~p~n", [R]),
+    case R of
+	{retransmit, HsState1} ->
+	    case Rest of
+		<<>> ->
+		    {retransmit, HsState1};
+		_ ->
+		    get_dtls_handshake_aux(Version, SeqNo, Rest, HsState1)
+	    end;
+	{HsState1, HighestSeqNo, MsgBody} ->
+	    HsState2 = dec_dtls_fragment(Version, HighestSeqNo, Type, Length, MessageSeq, MsgBody, HsState1),
+	    HsState3 = process_dtls_fragments(Version, HsState2),
+	    get_dtls_handshake_aux(Version, SeqNo, Rest, HsState3);
+	HsState2 ->
+	    HsState3 = process_dtls_fragments(Version, HsState2),
+	    get_dtls_handshake_aux(Version, SeqNo, Rest, HsState3)
+    end;
+
+get_dtls_handshake_aux(Version, _SeqNo, <<>>, HsState) ->
+    {lists:reverse(HsState#dtls_hs_state.completed),
+     HsState#dtls_hs_state.highest_record_seq,
+     HsState#dtls_hs_state{completed = []}}.
+
+dec_dtls_fragment(Version, SeqNo, Type, Length, MessageSeq, MsgBody,
+		  HsState = #dtls_hs_state{highest_record_seq = HighestSeqNo, completed = Acc}) ->
+    Raw = <<?BYTE(Type), ?UINT24(Length), ?UINT16(MessageSeq), ?UINT24(0), ?UINT24(Length), MsgBody/binary>>,
+    H = dec_hs(Version, Type, MsgBody),
+    HsState#dtls_hs_state{completed = [{H,Raw}|Acc], highest_record_seq = erlang:max(HighestSeqNo, SeqNo)}.
+
+process_dtls_fragments(Version,
+		       HsState0 = #dtls_hs_state{current_read_seq = CurrentReadSeq,
+						 fragments = Fragments0}) ->
+    case gb_trees:is_empty(Fragments0) of
+	true ->
+	    HsState0;
+	_ ->
+	    io:format("Smallest: ~p~n", [gb_trees:smallest(Fragments0)]),
+	    case gb_trees:smallest(Fragments0) of
+		{CurrentReadSeq, {SeqNo, Type, Length, CurrentReadSeq, {Length, [{0, Length}], MsgBody}}} ->
+		    HsState1 = dtls_hs_state_process_seq(HsState0),
+		    HsState2 = dec_dtls_fragment(Version, SeqNo, Type, Length, CurrentReadSeq, MsgBody, HsState1),
+		    process_dtls_fragments(Version, HsState2);
+		_ ->
+		    HsState0
+	    end
+    end.
+
+%% dtls_hs_state_init() ->
+%%     #dtls_hs_state{current_read_seq = undefined, highest_record_seq = 0,
+%% 		   fragments = gb_trees:empty(), completed = []}.
+
+dtls_hs_state_process_seq(HsState0 = #dtls_hs_state{current_read_seq = CurrentReadSeq,
+						    fragments = Fragments0}) ->
+    Fragments1 = gb_trees:delete_any(CurrentReadSeq, Fragments0),
+    HsState0#dtls_hs_state{current_read_seq = CurrentReadSeq + 1,
+			   fragments = Fragments1}.
+
+dtls_hs_state_add_fragment(MessageSeq, Fragment, HsState0 = #dtls_hs_state{fragments = Fragments0}) ->
+    Fragments1 = gb_trees:enter(MessageSeq, Fragment, Fragments0),
+    HsState0#dtls_hs_state{fragments = Fragments1}.
+
+reassemble_dtls_fragment(SeqNo, Type, Length, MessageSeq, 0, Length,
+			 Body, HsState0 = #dtls_hs_state{current_read_seq = undefined})
+  when Type == ?CLIENT_HELLO;
+       Type == ?SERVER_HELLO;
+       Type == ?HELLO_VERIFY_REQUEST ->
+    %% First message, should be client hello
+    %% return the current message and set the next expected Sequence
+    {HsState0#dtls_hs_state{current_read_seq = MessageSeq + 1}, SeqNo, Body};
+
+reassemble_dtls_fragment(_SeqNo, Type, Length, _MessageSeq, _, _Length,
+			 _Body, HsState = #dtls_hs_state{current_read_seq = undefined}) ->
+    %% not what we expected
+    io:format("invalid fragment: ~p~n~p~n", [{Type, Length}, HsState]),
+    HsState;
+
+reassemble_dtls_fragment(SeqNo, _Type, Length, MessageSeq, 0, Length,
+			 Body, HsState0 =
+			     #dtls_hs_state{starting_read_seq = StaringReadSeq})
+  when MessageSeq < StaringReadSeq ->
+    %% this has to be the start of a new flight, let it through,
+    HsState = dtls_hs_state_process_seq(HsState0),
+    {HsState, SeqNo, Body};
+
+reassemble_dtls_fragment(_SeqNo, _Type, Length, MessageSeq, 0, Length,
+			 _Body, HsState =
+			     #dtls_hs_state{current_read_seq = CurrentReadSeq})
+  when MessageSeq < CurrentReadSeq ->
+    {retransmit, HsState};
+
+reassemble_dtls_fragment(_SeqNo, _Type, Length, MessageSeq, 0, Length,
+			 _Body, HsState = #dtls_hs_state{current_read_seq = CurrentReadSeq})
+  when MessageSeq < CurrentReadSeq ->
+    HsState;
+
+reassemble_dtls_fragment(SeqNo, _Type, Length, MessageSeq, 0, Length,
+			 Body, HsState0 = #dtls_hs_state{current_read_seq = MessageSeq}) ->
+    %% Message fully contained and it's the current seq
+    HsState1 = dtls_hs_state_process_seq(HsState0),
+    {HsState1, SeqNo, Body};
+
+reassemble_dtls_fragment(SeqNo, Type, Length, MessageSeq, 0, Length,
+			 Body, HsState) ->
+    %% Message fully contained and it's the NOT the current seq -> buffer
+    Fragment = {SeqNo, Type, Length, MessageSeq,
+		dtls_fragment_init(Length, 0, Length, Body)},
+    dtls_hs_state_add_fragment(MessageSeq, Fragment, HsState);
+
+reassemble_dtls_fragment(_SeqNo, _Type, Length, MessageSeq, FragmentOffset, FragmentLength,
+			 _Body,
+			 HsState = #dtls_hs_state{current_read_seq = CurrentReadSeq})
+  when FragmentOffset + FragmentLength == Length andalso MessageSeq == (CurrentReadSeq - 1) ->
+    {retransmit, HsState};
+
+reassemble_dtls_fragment(_SeqNo, _Type, _Length, MessageSeq, _FragmentOffset, _FragmentLength,
+			 _Body,
+			 HsState = #dtls_hs_state{current_read_seq = CurrentReadSeq})
+  when MessageSeq < CurrentReadSeq ->
+    HsState;
+
+reassemble_dtls_fragment(SeqNo, Type, Length, MessageSeq,
+			 FragmentOffset, FragmentLength,
+			 Body,
+			 HsState = #dtls_hs_state{fragments = Fragments0}) ->
+    case gb_trees:lookup(MessageSeq, Fragments0) of
+	{value, Fragment} ->
+	    dtls_fragment_reassemble(SeqNo, Type, Length, MessageSeq,
+				     FragmentOffset, FragmentLength,
+				     Body, Fragment, HsState);
+	none ->
+	    dtls_fragment_start(SeqNo, Type, Length, MessageSeq,
+				FragmentOffset, FragmentLength,
+				Body, HsState)
+    end.
+
+dtls_fragment_start(SeqNo, Type, Length, MessageSeq,
+				FragmentOffset, FragmentLength,
+				Body, HsState = #dtls_hs_state{fragments = Fragments0}) ->
+    Fragment = {SeqNo, Type, Length, MessageSeq,
+		dtls_fragment_init(Length, FragmentOffset, FragmentLength, Body)},
+    Fragments1 = gb_trees:insert(MessageSeq, Fragment, Fragments0),
+    HsState#dtls_hs_state{fragments = Fragments1}.
+
+dtls_fragment_reassemble(SeqNo, Type, Length, MessageSeq,
+			 FragmentOffset, FragmentLength,
+			 Body,
+			 {LastSeqNo, Type, Length, MessageSeq, FragBuffer0},
+			 HsState = #dtls_hs_state{fragments = Fragments0}) ->
+    FragBuffer1 = dtls_fragment_add(FragBuffer0, FragmentOffset, FragmentLength, Body),
+    Fragment = {erlang:max(SeqNo, LastSeqNo), Type, Length, MessageSeq, FragBuffer1},
+    Fragments1 = gb_trees:enter(MessageSeq, Fragment, Fragments0),
+    HsState#dtls_hs_state{fragments = Fragments1};
+
+%% Type, Length or Seq mismatch, drop everything...
+%% Note: the RFC is not clear on how to handle this...
+dtls_fragment_reassemble(_SeqNo, _Type, _Length, MessageSeq,
+			 _FragmentOffset, _FragmentLength, _Body, _Fragment,
+			 HsState = #dtls_hs_state{fragments = Fragments0}) ->
+    Fragments1 = gb_trees:delete_any(MessageSeq, Fragments0),
+    HsState#dtls_hs_state{fragments = Fragments1}.
+
+dtls_fragment_add({Length, FragmentList0, Bin0}, FragmentOffset, FragmentLength, Body) ->
+    Bin1 = dtls_fragment_bin_add(FragmentOffset, FragmentLength, Body, Bin0),
+    FragmentList1 = add_fragment(FragmentList0, {FragmentOffset, FragmentLength}),
+    {Length, FragmentList1, Bin1}.
+
+dtls_fragment_init(Length, 0, Length, Body) ->
+    {Length, [{0, Length}], Body};
+dtls_fragment_init(Length, FragmentOffset, FragmentLength, Body) ->
+    Bin = dtls_fragment_bin_add(FragmentOffset, FragmentLength, Body, <<0:(Length*8)>>),
+    {Length, [{FragmentOffset, FragmentLength}], Bin}.
+
+dtls_fragment_bin_add(FragmentOffset, FragmentLength, Add, Buffer) ->
+    <<First:FragmentOffset/bytes, _:FragmentLength/bytes, Rest/binary>> = Buffer,
+    <<First/binary, Add/binary, Rest/binary>>.
+
+merge_fragment_list([], Fragment, Acc) ->
+    lists:reverse([Fragment|Acc]);
+
+merge_fragment_list([H = {_, HEnd}|Rest], Frag = {FStart, _}, Acc)
+  when FStart > HEnd ->
+    merge_fragment_list(Rest, Frag, [H|Acc]);
+
+merge_fragment_list(Rest = [{HStart, _HEnd}|_], Frag = {_FStart, FEnd}, Acc)
+  when FEnd < HStart ->
+    lists:reverse(Acc) ++ [Frag|Rest];
+
+merge_fragment_list([{HStart, HEnd}|Rest], _Frag = {FStart, FEnd}, Acc)
+  when
+      FStart =< HEnd orelse FEnd >= HStart ->
+    Start = erlang:min(HStart, FStart),
+    End = erlang:max(HEnd, FEnd),
+    NewFrag = {Start, End},
+    merge_fragment_list(Rest, NewFrag, Acc).
+
+add_fragment(List, {FragmentOffset, FragmentLength}) ->
+    merge_fragment_list(List, {FragmentOffset, FragmentOffset + FragmentLength}, []).
 
 path_validation_alert({bad_cert, cert_expired}) ->
     ?ALERT_REC(?FATAL, ?CERTIFICATE_EXPIRED);
@@ -749,13 +1100,18 @@ path_validation_alert(_) ->
 select_session(Hello, Port, Session, Version,
 	       #ssl_options{ciphers = UserSuites} = SslOpts, Cache, CacheCb, Cert) ->
     SuggestedSessionId = Hello#client_hello.session_id,
+    io:format("Client SESSION ID: ~p~n", [Hello#client_hello.session_id]),
     {SessionId, Resumed} = ssl_session:server_id(Port, SuggestedSessionId,
 						 SslOpts, Cert,
 						 Cache, CacheCb),
     Suites = available_suites(Cert, UserSuites, Version),
     case Resumed of
         undefined ->
+	    %% io:format("select_cipher_suite:~n"),
+            %% io:format("  Client: ~p~n", [[ssl_cipher:suite_definition(S) || S <- Hello#client_hello.cipher_suites]]),
+            %% io:format("  Us: ~p~n", [[ssl_cipher:suite_definition(S) || S <- Suites]]),
 	    CipherSuite = select_cipher_suite(Hello#client_hello.cipher_suites, Suites),
+            io:format("selected_cipher_suite: '~p'~n", [CipherSuite]),
 	    Compressions = Hello#client_hello.compression_methods,
 	    Compression = select_compression(Compressions),
 	    {new, Session#session{session_id = SessionId,
@@ -1044,6 +1400,13 @@ master_secret(Version, MasterSecret, #security_parameters{
 	setup_keys(Version, PrfAlgo, MasterSecret, ServerRandom,
 		   ClientRandom, HashSize, KML, EKML, IVS),
 
+    io:format("ClientWriteIV:~n~s~n~p~n", [hexdump(ClientWriteIV), ClientWriteIV]),
+    io:format("ServerWriteIV:~n~s~n~p~n", [hexdump(ServerWriteIV), ServerWriteIV]),
+    io:format("ClientWriteKey:~n~s~n", [hexdump(ClientWriteKey)]),
+    io:format("ServerWriteKey:~n~s~n", [hexdump(ServerWriteKey)]),
+    io:format("ClientIV:~n~s~n", [hexdump(ClientIV)]),
+    io:format("ServerIV:~n~s~n", [hexdump(ServerIV)]),
+
     ConnStates1 = ssl_record:set_master_secret(MasterSecret, ConnectionStates),
     ConnStates2 =
 	ssl_record:set_mac_secret(ClientWriteIV, ServerWriteIV,
@@ -1082,7 +1445,8 @@ dec_hs(_Version, ?CLIENT_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
 		       ?BYTE(SID_length), Session_ID:SID_length/binary,
 		       ?UINT16(Cs_length), CipherSuites:Cs_length/binary,
 		       ?BYTE(Cm_length), Comp_methods:Cm_length/binary,
-		       Extensions/binary>>) ->
+		       Extensions/binary>>)
+  when Major < 128 ->
 
     DecodedExtensions = dec_hello_extensions(Extensions),
     RenegotiationInfo = proplists:get_value(renegotiation_info, DecodedExtensions, undefined),
@@ -1099,7 +1463,37 @@ dec_hs(_Version, ?CLIENT_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
        cipher_suites = from_2bytes(CipherSuites),
        compression_methods = Comp_methods,
        renegotiation_info = RenegotiationInfo,
-	srp = SRP,
+       srp = SRP,
+       hash_signs = HashSigns,
+       elliptic_curves = EllipticCurves,
+       next_protocol_negotiation = NextProtocolNegotiation
+      };
+
+dec_hs(_Version, ?CLIENT_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
+		       ?BYTE(SID_length), Session_ID:SID_length/binary,
+		       ?BYTE(Cookie_length), Cookie:Cookie_length/binary,
+		       ?UINT16(Cs_length), CipherSuites:Cs_length/binary,
+		       ?BYTE(Cm_length), Comp_methods:Cm_length/binary,
+		       Extensions/binary>>)
+  when Major >= 128 ->
+
+    DecodedExtensions = dec_hello_extensions(Extensions),
+    RenegotiationInfo = proplists:get_value(renegotiation_info, DecodedExtensions, undefined),
+    SRP = proplists:get_value(srp, DecodedExtensions, undefined),
+    HashSigns = proplists:get_value(hash_signs, DecodedExtensions, undefined),
+    EllipticCurves = proplists:get_value(elliptic_curves, DecodedExtensions,
+					 undefined),
+    NextProtocolNegotiation = proplists:get_value(next_protocol_negotiation, DecodedExtensions, undefined),
+
+    #client_hello{
+       client_version = {Major,Minor},
+       random = Random,
+       session_id = Session_ID,
+       cookie = Cookie,
+       cipher_suites = from_2bytes(CipherSuites),
+       compression_methods = Comp_methods,
+       renegotiation_info = RenegotiationInfo,
+       srp = SRP,
        hash_signs = HashSigns,
        elliptic_curves = EllipticCurves,
        next_protocol_negotiation = NextProtocolNegotiation
@@ -1142,6 +1536,14 @@ dec_hs(_Version, ?SERVER_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
 	hash_signs = HashSigns,
 	elliptic_curves = EllipticCurves,
        next_protocol_negotiation = NextProtocolNegotiation};
+dec_hs(_Version, ?HELLO_VERIFY_REQUEST, <<?BYTE(Major), ?BYTE(Minor),
+		       ?BYTE(CookieLength), Cookie:CookieLength/binary>>)
+  when Major >= 128 ->
+
+    #hello_verify_request{
+	server_version = {Major,Minor},
+        cookie = Cookie};
+
 dec_hs(_Version, ?CERTIFICATE, <<?UINT24(ACLen), ASN1Certs:ACLen/binary>>) ->
     #certificate{asn1_certificates = certs_to_list(ASN1Certs)};
 dec_hs(_Version, ?SERVER_KEY_EXCHANGE, Keys) ->
@@ -1172,7 +1574,8 @@ dec_hs(_Version, ?CLIENT_KEY_EXCHANGE, PKEPMS) ->
     #client_key_exchange{exchange_keys = PKEPMS};
 dec_hs(_Version, ?FINISHED, VerifyData) ->
     #finished{verify_data = VerifyData};
-dec_hs(_, _, _) ->
+dec_hs(_Version, Rec, Data) ->
+	io:format("dec_hs: Rec: ~w, Data: ~p~n", [Rec, Data]),
     throw(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE)).
 
 dec_client_key(PKEPMS, ?KEY_EXCHANGE_RSA, {3, 0}) ->
@@ -1386,9 +1789,16 @@ enc_hs(#next_protocol{selected_protocol = SelectedProtocol}, _Version) ->
                          ?BYTE(PaddingLength), 0:(PaddingLength * 8)>>};
 enc_hs(#hello_request{}, _Version) ->
     {?HELLO_REQUEST, <<>>};
+enc_hs(#hello_verify_request{server_version = {Major, Minor},
+			     cookie = Cookie}, _Version) ->
+    CookieLength = byte_size(Cookie),
+    {?HELLO_VERIFY_REQUEST, <<?BYTE(Major), ?BYTE(Minor),
+			      ?BYTE(CookieLength),
+			      Cookie/binary>>};
 enc_hs(#client_hello{client_version = {Major, Minor},
 		     random = Random,
 		     session_id = SessionID,
+		     cookie = Cookie,
 		     cipher_suites = CipherSuites,
 		     compression_methods = CompMethods, 
 		     renegotiation_info = RenegotiationInfo,
@@ -1396,8 +1806,9 @@ enc_hs(#client_hello{client_version = {Major, Minor},
 		     hash_signs = HashSigns,
 		     ec_point_formats = EcPointFormats,
 		     elliptic_curves = EllipticCurves,
-		     next_protocol_negotiation = NextProtocolNegotiation}, _Version) ->
+		     next_protocol_negotiation = NextProtocolNegotiation}, Version) ->
     SIDLength = byte_size(SessionID),
+    BinCookie = enc_client_hello_cookie(Version, Cookie),
     BinCompMethods = list_to_binary(CompMethods),
     CmLength = byte_size(BinCompMethods),
     BinCipherSuites = list_to_binary(CipherSuites),
@@ -1413,6 +1824,7 @@ enc_hs(#client_hello{client_version = {Major, Minor},
 
  {?CLIENT_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
 		     ?BYTE(SIDLength), SessionID/binary,
+		     BinCookie/binary,
 		     ?UINT16(CsLength), BinCipherSuites/binary,
 		     ?BYTE(CmLength), BinCompMethods/binary, ExtensionsBin/binary>>};
 
@@ -1472,6 +1884,8 @@ enc_hs(#server_hello_done{}, _Version) ->
 enc_hs(#client_key_exchange{exchange_keys = ExchangeKeys}, Version) ->
     {?CLIENT_KEY_EXCHANGE, enc_cke(ExchangeKeys, Version)};
 enc_hs(#certificate_verify{signature = BinSig, hashsign_algorithm = HashSign}, Version) ->
+    io:format("BinSign: ~p~n", [BinSig]),
+    io:format("HashSign: ~p~n", [HashSign]),
     EncSig = enc_sign(HashSign, BinSig, Version),
     {?CERTIFICATE_VERIFY, EncSig};
 enc_hs(#finished{verify_data = VerifyData}, _Version) ->
@@ -1633,6 +2047,13 @@ encode_client_protocol_negotiation(_, false) ->
 encode_client_protocol_negotiation(_, _) ->
 	undefined.
 
+enc_client_hello_cookie({Major, _}, Cookie)
+  when Major >= 128 ->
+    CookieLength = byte_size(Cookie),
+    <<?BYTE(CookieLength), Cookie/binary>>;
+enc_client_hello_cookie(_, _) ->
+    <<>>.
+
 from_3bytes(Bin3) ->
     from_3bytes(Bin3, []).
 
@@ -1670,6 +2091,7 @@ hashsign_dec(<<?BYTE(HashAlgo), ?BYTE(SignAlgo)>>) ->
 hashsign_enc(HashAlgo, SignAlgo) ->
     Hash = ssl_cipher:hash_algorithm(HashAlgo),
     Sign = ssl_cipher:sign_algorithm(SignAlgo),
+    io:format("H: ~w, S: ~w~n", [Hash, Sign]),
     <<?BYTE(Hash), ?BYTE(Sign)>>.
 
 certificate_authorities(CertDbHandle, CertDbRef) ->
@@ -1708,6 +2130,9 @@ calc_master_secret({3,0}, _PrfAlgo, PremasterSecret, ClientRandom, ServerRandom)
     ssl_ssl3:master_secret(PremasterSecret, ClientRandom, ServerRandom);
 
 calc_master_secret({3,_}, PrfAlgo, PremasterSecret, ClientRandom, ServerRandom) ->
+    ssl_tls1:master_secret(PrfAlgo, PremasterSecret, ClientRandom, ServerRandom);
+
+calc_master_secret({254,_}, PrfAlgo, PremasterSecret, ClientRandom, ServerRandom) ->
     ssl_tls1:master_secret(PrfAlgo, PremasterSecret, ClientRandom, ServerRandom).
 
 setup_keys({3,0}, _PrfAlgo, MasterSecret,
@@ -1718,22 +2143,41 @@ setup_keys({3,0}, _PrfAlgo, MasterSecret,
 setup_keys({3,N}, PrfAlgo, MasterSecret,
 	   ServerRandom, ClientRandom, HashSize, KML, _EKML, IVS) ->
     ssl_tls1:setup_keys(N, PrfAlgo, MasterSecret, ServerRandom, ClientRandom, HashSize,
+			KML, IVS);
+
+setup_keys({254,255}, PrfAlgo, MasterSecret,
+	   ServerRandom, ClientRandom, HashSize, KML, _EKML, IVS) ->
+    ssl_tls1:setup_keys(2, PrfAlgo, MasterSecret, ServerRandom, ClientRandom, HashSize,
+			KML, IVS);
+setup_keys({254,N}, PrfAlgo, MasterSecret,
+	   ServerRandom, ClientRandom, HashSize, KML, _EKML, IVS) ->
+    ssl_tls1:setup_keys(256 - N, PrfAlgo, MasterSecret, ServerRandom, ClientRandom, HashSize,
 			KML, IVS).
 
 calc_finished({3, 0}, Role, _PrfAlgo, MasterSecret, Handshake) ->
     ssl_ssl3:finished(Role, MasterSecret, lists:reverse(Handshake));
 calc_finished({3, N}, Role, PrfAlgo, MasterSecret, Handshake) ->
-    ssl_tls1:finished(Role, N, PrfAlgo, MasterSecret, lists:reverse(Handshake)).
+    ssl_tls1:finished(Role, N, PrfAlgo, MasterSecret, lists:reverse(Handshake));
+calc_finished({254, 255}, Role, PrfAlgo, MasterSecret, Handshake) ->
+    ssl_tls1:finished(Role, 2, PrfAlgo, MasterSecret, lists:reverse(Handshake));
+calc_finished({254, N}, Role, PrfAlgo, MasterSecret, Handshake) ->
+    ssl_tls1:finished(Role, 256 - N, PrfAlgo, MasterSecret, lists:reverse(Handshake)).
 
 calc_certificate_verify({3, 0}, HashAlgo, MasterSecret, Handshake) ->
     ssl_ssl3:certificate_verify(HashAlgo, MasterSecret, lists:reverse(Handshake));
 calc_certificate_verify({3, N}, HashAlgo, _MasterSecret, Handshake) ->
-    ssl_tls1:certificate_verify(HashAlgo, N, lists:reverse(Handshake)).
+    ssl_tls1:certificate_verify(HashAlgo, N, lists:reverse(Handshake));
+calc_certificate_verify({254, 255}, HashAlgo, _MasterSecret, Handshake) ->
+    ssl_tls1:certificate_verify(HashAlgo, 2, lists:reverse(Handshake));
+calc_certificate_verify({254, N}, HashAlgo, _MasterSecret, Handshake) ->
+    ssl_tls1:certificate_verify(HashAlgo, 256 - N, lists:reverse(Handshake)).
 
 key_exchange_alg(rsa) ->
+    io:format("Key Exchange RSA~n"),
     ?KEY_EXCHANGE_RSA;
 key_exchange_alg(Alg) when Alg == dhe_rsa; Alg == dhe_dss;
 			    Alg == dh_dss; Alg == dh_rsa; Alg == dh_anon ->
+    io:format("Key Exchange DH: ~p~n", [Alg]),
     ?KEY_EXCHANGE_DIFFIE_HELLMAN;
 key_exchange_alg(Alg) when Alg == ecdhe_rsa; Alg == ecdh_rsa;
 			   Alg == ecdhe_ecdsa; Alg == ecdh_ecdsa;
@@ -1748,7 +2192,8 @@ key_exchange_alg(rsa_psk) ->
 key_exchange_alg(Alg)
   when Alg == srp_rsa; Alg == srp_dss; Alg == srp_anon ->
     ?KEY_EXCHANGE_SRP;
-key_exchange_alg(_) ->
+key_exchange_alg(T) ->
+    io:format("Key Exchange New: ~p~n", [T]),
     ?NULL.
 
 apply_user_fun(Fun, OtpCert, ExtensionOrError, UserState0, SslState) ->

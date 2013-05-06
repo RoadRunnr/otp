@@ -29,7 +29,7 @@
 -include("ssl_record.hrl").
 
 -export([master_secret/4, finished/5, certificate_verify/3, mac_hash/7,
-	 setup_keys/8, suites/1, prf/5,
+	 setup_keys/8, suites/1, dtls_suites/1, prf/5,
 	 ecc_curves/1, ec_nid2curve_id/1, ec_curve_id2nid/1]).
 
 %%====================================================================
@@ -43,6 +43,10 @@ master_secret(PrfAlgo, PreMasterSecret, ClientRandom, ServerRandom) ->
     %%                                      "master secret", ClientHello.random +
     %%                                      ServerHello.random)[0..47];
 
+    io:format("ClientRandom:~n~s~n", [ssl_handshake:hexdump(ClientRandom)]),
+    io:format("ServerRandom:~n~s~n", [ssl_handshake:hexdump(ServerRandom)]),
+    io:format("PreMasterSecret:~n~s~n", [ssl_handshake:hexdump(PreMasterSecret)]),
+    io:format("PrfAlgo: ~w~n", [PrfAlgo]),
     prf(PrfAlgo, PreMasterSecret, <<"master secret">>,
 	[ClientRandom, ServerRandom], 48).
 
@@ -159,6 +163,11 @@ setup_keys(Version, PrfAlgo, MasterSecret, ServerRandom, ClientRandom, HashSize,
     WantedLength = 2 * (HashSize + KeyMatLen + IVSize),
     KeyBlock = prf(PrfAlgo, MasterSecret, "key expansion",
 		   [ServerRandom, ClientRandom], WantedLength),
+    io:format("HashSize: ~w~n", [HashSize]),
+    io:format("KeyMatLen: ~w~n", [KeyMatLen]),
+    io:format("IVSize: ~w~n", [IVSize]),
+    io:format("WantedLength: ~w~n", [WantedLength]),
+    io:format("KeyBlock~n~s~n", [ssl_handshake:hexdump(KeyBlock)]),
     <<ClientWriteMacSecret:HashSize/binary,
      ServerWriteMacSecret:HashSize/binary,
      ClientWriteKey:KeyMatLen/binary, ServerWriteKey:KeyMatLen/binary,
@@ -175,6 +184,11 @@ mac_hash(Method, Mac_write_secret, Seq_num, Type, {Major, Minor},
     %% HMAC_hash(MAC_write_secret, seq_num + TLSCompressed.type +
     %%              TLSCompressed.version + TLSCompressed.length +
     %%              TLSCompressed.fragment));
+
+    %% io:format("mac_hash: ~w~n", [Method]),
+    %% io:format("seq:~n~s~n", [ssl_handshake:hexdump(<<?UINT64(Seq_num)>>)]),
+    %% io:format("buf:~n~s~n", [ssl_handshake:hexdump(<<?BYTE(Type), ?BYTE(Major), ?BYTE(Minor), ?UINT16(Length)>>)]),
+    %% io:format("rec:~n~s~n", [ssl_handshake:hexdump(Fragment)]),
     Mac = hmac_hash(Method, Mac_write_secret, 
 		    [<<?UINT64(Seq_num), ?BYTE(Type), 
 		      ?BYTE(Major), ?BYTE(Minor), ?UINT16(Length)>>, 
@@ -222,21 +236,21 @@ suites(Minor) when Minor == 1; Minor == 2->
 suites(Minor) when Minor == 3 ->
     [
      %% TODO: sort!!!!!!!!!!!!!!!!!!!!!!!!
-     ?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-     ?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-     ?TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384,
-     ?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384,
-     ?TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-     ?TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-     ?TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256,
-     ?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256,
 
-     ?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384,
-     ?TLS_DHE_DSS_WITH_AES_256_GCM_SHA384,
-     ?TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
-     ?TLS_DHE_DSS_WITH_AES_128_GCM_SHA256,
-     ?TLS_RSA_WITH_AES_256_GCM_SHA384,
-     ?TLS_RSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_DHE_DSS_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_DHE_DSS_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_RSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_RSA_WITH_AES_128_GCM_SHA256,
 
      %% ?TLS_DH_RSA_WITH_AES_256_GCM_SHA384,
      %% ?TLS_DH_DSS_WITH_AES_256_GCM_SHA384,
@@ -266,6 +280,86 @@ suites(Minor) when Minor == 3 ->
      %% ?TLS_DH_anon_WITH_AES_256_CBC_SHA256
      %% ?TLS_DH_anon_WITH_AES_128_CBC_SHA256,
 	] ++ suites(2).
+
+-spec dtls_suites(253|255) -> [cipher_suite()].
+    
+dtls_suites(255) ->
+    [
+      ?TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+      ?TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+      ?TLS_DHE_RSA_WITH_AES_256_CBC_SHA,
+      ?TLS_DHE_DSS_WITH_AES_256_CBC_SHA,
+      ?TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA,
+      ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA,
+      ?TLS_RSA_WITH_AES_256_CBC_SHA,
+
+      ?TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_DHE_DSS_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_ECDH_ECDSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_ECDH_RSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+
+      ?TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+      ?TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+      ?TLS_DHE_RSA_WITH_AES_128_CBC_SHA,
+      ?TLS_DHE_DSS_WITH_AES_128_CBC_SHA,
+      ?TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA,
+      ?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA,
+      ?TLS_RSA_WITH_AES_128_CBC_SHA,
+      %%?TLS_RSA_WITH_IDEA_CBC_SHA,
+      ?TLS_DHE_RSA_WITH_DES_CBC_SHA,
+      ?TLS_RSA_WITH_DES_CBC_SHA
+     ];
+
+dtls_suites(_) ->
+    [
+     %% TODO: sort!!!!!!!!!!!!!!!!!!!!!!!!
+     %% ?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256,
+
+     %% ?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_DHE_DSS_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_DHE_DSS_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_RSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_RSA_WITH_AES_128_GCM_SHA256,
+
+     %% ?TLS_DH_RSA_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_DH_DSS_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_DH_RSA_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_DH_DSS_WITH_AES_128_GCM_SHA256,
+     %% TODO: End here....
+
+     ?TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384,
+
+     ?TLS_DHE_RSA_WITH_AES_256_CBC_SHA256,
+     ?TLS_DHE_DSS_WITH_AES_256_CBC_SHA256,
+     ?TLS_RSA_WITH_AES_256_CBC_SHA256,
+
+     ?TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+     ?TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+     ?TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256,
+     ?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256,
+
+     ?TLS_DHE_RSA_WITH_AES_128_CBC_SHA256,
+     ?TLS_DHE_DSS_WITH_AES_128_CBC_SHA256,
+     ?TLS_RSA_WITH_AES_128_CBC_SHA256
+     %% ?TLS_DH_anon_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_DH_anon_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_DH_anon_WITH_AES_256_CBC_SHA256
+     %% ?TLS_DH_anon_WITH_AES_128_CBC_SHA256,
+	] ++ dtls_suites(255).
 
 %%--------------------------------------------------------------------
 %%% Internal functions

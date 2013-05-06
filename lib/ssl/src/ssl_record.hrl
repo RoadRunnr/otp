@@ -31,8 +31,11 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -record(connection_states, {
+	  min_read_epoch,
+	  previous_read,
 	  current_read,
 	  pending_read,
+	  previous_write,
 	  current_write,
 	  pending_write
 	 }).
@@ -61,6 +64,7 @@
 	  compression_state,
 	  cipher_state,
 	  mac_secret,
+	  epoch,
 	  sequence_number,
 	  %% RFC 5746
 	  secure_renegotiation,
@@ -148,6 +152,8 @@
 	  port,
 	  type,
 	  version, 
+	  epoch,
+	  sequence,
 	  fragment
 	 }).
 

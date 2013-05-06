@@ -23,7 +23,10 @@
 	       ssl_srp_primes,
 	       ssl_certificate_db,
 	       ssl_certificate,
-	       ssl_alert
+	       ssl_alert,
+	       ssl_udp,
+	       ssl_udp_test,
+	       ssl_datagram
 	       ]},
     {registered, [ssl_sup, ssl_manager]},
     {applications, [crypto, public_key, kernel, stdlib]},

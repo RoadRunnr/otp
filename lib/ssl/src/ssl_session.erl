@@ -81,8 +81,10 @@ server_id(Port, SuggestedId, Options, Cert, Cache, CacheCb) ->
 		      Cache, CacheCb, LifeTime, Cert)
     of
 	{true, Resumed} ->
+	    io:format("RESUMABLE\n"),
 	    {SuggestedId, Resumed};
 	{false, undefined} ->
+	    io:format("NOT RESUMABLE\n"),
 	    {ssl_manager:new_session_id(Port), undefined}
     end.
 

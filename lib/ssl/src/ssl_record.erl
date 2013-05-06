@@ -32,8 +32,10 @@
 -include("ssl_cipher.hrl").
 
 %% Connection state handling
--export([init_connection_states/1, 
+-export([init_connection_states/2, init_connection_state_seq/2,
          current_connection_state/2, pending_connection_state/2,
+	 current_connection_state_epoch/2, clear_previous_epoch/1,
+	 connection_state_by_epoch/3, set_connection_state_by_epoch/3,
          update_security_params/3,
          set_mac_secret/4,
 	 set_master_secret/2, 
@@ -41,7 +43,8 @@
          set_pending_cipher_state/4,
 	 set_renegotiation_flag/2,
 	 set_client_verify_data/3,
-	 set_server_verify_data/3]).
+	 set_server_verify_data/3,
+	 encode_tls_cipher_text/5]).
 
 %% Handling of incoming data
 -export([get_tls_records/2]).
@@ -55,7 +58,8 @@
 
 %% Misc.
 -export([protocol_version/1, lowest_protocol_version/2,
-	 highest_protocol_version/1, supported_protocol_versions/0,
+	 highest_protocol_version/1, highest_connection_protocol_version/1,
+	 supported_protocol_versions/0, supported_protocol_versions/1,
 	 is_acceptable_version/1, is_acceptable_version/2]).
 
 -export([compressions/0]).
@@ -69,20 +73,20 @@
 %%====================================================================
 
 %%--------------------------------------------------------------------
--spec init_connection_states(client | server) -> #connection_states{}.
+-spec init_connection_states(client | server, stream | datagram) -> #connection_states{}.
 %%
 %% Description: Creates a connection_states record with appropriate
 %% values for the initial SSL connection setup. 
 %%--------------------------------------------------------------------
-init_connection_states(Role) ->
+init_connection_states(Role, ConnType) ->
     ConnectionEnd = record_protocol_role(Role),
-    Current = initial_connection_state(ConnectionEnd),
+    Current = initial_connection_state(ConnectionEnd, ConnType),
     Pending = empty_connection_state(ConnectionEnd),
-    #connection_states{current_read = Current,
+    #connection_states{min_read_epoch = 0,
+		       current_read = Current,
 		       pending_read = Pending,
 		       current_write = Current,
-		       pending_write = Pending
-                      }.
+		       pending_write = Pending}.
 
 %%--------------------------------------------------------------------
 -spec current_connection_state(#connection_states{}, read | write) ->
@@ -99,6 +103,37 @@ current_connection_state(#connection_states{current_write = Current},
     Current.
 
 %%--------------------------------------------------------------------
+-spec init_connection_state_seq(tls_version(), #connection_states{}) ->
+				       #connection_state{}.
+%%
+%% Description: Copy the read sequence number to the write sequence number
+%% This is only valid for DTLS in the first client_hello
+%%--------------------------------------------------------------------  
+init_connection_state_seq({254, _},
+			  #connection_states{
+			    current_read = Read = #connection_state{epoch = 0},
+			    current_write = Write = #connection_state{epoch = 0}} = CS0) ->
+    CS0#connection_states{current_write =
+			      Write#connection_state{
+				sequence_number = Read#connection_state.sequence_number}};
+init_connection_state_seq(_, CS) ->
+    CS.
+
+%%--------------------------------------------------------------------
+-spec current_connection_state_epoch(#connection_states{}, read | write) ->
+					    integer().
+%%
+%% Description: Returns the epoch the connection_state record
+%% that is currently defined as the current conection state.
+%%--------------------------------------------------------------------
+current_connection_state_epoch(#connection_states{current_read = Current},
+			 read) ->
+    Current#connection_state.epoch;
+current_connection_state_epoch(#connection_states{current_write = Current},
+			 write) ->
+    Current#connection_state.epoch.
+
+%%--------------------------------------------------------------------
 -spec pending_connection_state(#connection_states{}, read | write) ->
 				      #connection_state{}.
 %%
@@ -111,6 +146,75 @@ pending_connection_state(#connection_states{pending_read = Pending},
 pending_connection_state(#connection_states{pending_write = Pending},
 			 write) ->
     Pending.
+
+%%--------------------------------------------------------------------
+-spec connection_state_by_epoch(#connection_states{}, integer(), read | write) ->
+				      #connection_state{}.
+%%
+%% Description: Returns the instance of the connection_state record
+%% that is defined by the Epoch.
+%%--------------------------------------------------------------------
+connection_state_by_epoch(#connection_states{previous_read = CS}, Epoch, read)
+  when CS#connection_state.epoch == Epoch ->
+    CS;
+connection_state_by_epoch(#connection_states{current_read = CS}, Epoch, read)
+  when CS#connection_state.epoch == Epoch ->
+    CS;
+connection_state_by_epoch(#connection_states{pending_read = CS}, Epoch, read)
+  when CS#connection_state.epoch == Epoch ->
+    CS;
+connection_state_by_epoch(#connection_states{previous_write = CS}, Epoch, write)
+  when CS#connection_state.epoch == Epoch ->
+    CS;
+connection_state_by_epoch(#connection_states{current_write = CS}, Epoch, write)
+  when CS#connection_state.epoch == Epoch ->
+    CS;
+connection_state_by_epoch(#connection_states{pending_write = CS}, Epoch, write)
+  when CS#connection_state.epoch == Epoch ->
+    CS.
+
+%%--------------------------------------------------------------------
+-spec set_connection_state_by_epoch(#connection_states{},
+				    #connection_state{}, read | write) -> ok.
+%%
+%% Description: Returns the instance of the connection_state record
+%% that is defined by the Epoch.
+%%--------------------------------------------------------------------
+set_connection_state_by_epoch(ConnectionStates0 =
+			      #connection_states{previous_read = CS},
+			      NewCS = #connection_state{epoch = Epoch}, read)
+  when CS#connection_state.epoch == Epoch ->
+    ConnectionStates0#connection_states{previous_read = NewCS};
+
+set_connection_state_by_epoch(ConnectionStates0 =
+			      #connection_states{current_read = CS},
+			      NewCS = #connection_state{epoch = Epoch}, read)
+  when CS#connection_state.epoch == Epoch ->
+    ConnectionStates0#connection_states{current_read = NewCS};
+
+set_connection_state_by_epoch(ConnectionStates0 =
+			      #connection_states{pending_read = CS},
+			      NewCS = #connection_state{epoch = Epoch}, read)
+  when CS#connection_state.epoch == Epoch ->
+    ConnectionStates0#connection_states{pending_read = NewCS};
+
+set_connection_state_by_epoch(ConnectionStates0 =
+			      #connection_states{previous_write = CS},
+			      NewCS = #connection_state{epoch = Epoch}, write)
+  when CS#connection_state.epoch == Epoch ->
+    ConnectionStates0#connection_states{previous_write = NewCS};
+
+set_connection_state_by_epoch(ConnectionStates0 =
+			      #connection_states{current_write = CS},
+			      NewCS = #connection_state{epoch = Epoch}, write)
+  when CS#connection_state.epoch == Epoch ->
+    ConnectionStates0#connection_states{current_write = NewCS};
+
+set_connection_state_by_epoch(ConnectionStates0 =
+			      #connection_states{pending_write = CS},
+			      NewCS = #connection_state{epoch = Epoch}, write)
+  when CS#connection_state.epoch == Epoch ->
+    ConnectionStates0#connection_states{pending_write = NewCS}.
 
 %%--------------------------------------------------------------------
 -spec update_security_params(#security_parameters{}, #security_parameters{},
@@ -260,30 +364,47 @@ set_server_verify_data(current_both, Data,
 %% where the pending state of <Type> has been activated. 
 %%--------------------------------------------------------------------
 activate_pending_connection_state(States = 
-                                  #connection_states{pending_read = Pending},
+                                  #connection_states{current_read = Current,
+						     pending_read = Pending},
                                   read) ->
-    NewCurrent = Pending#connection_state{sequence_number = 0},
+    NewCurrent = Pending#connection_state{epoch = connection_state_next_epoch(Current),
+					  sequence_number = 0},
     SecParams = Pending#connection_state.security_parameters,
     ConnectionEnd = SecParams#security_parameters.connection_end,
     EmptyPending = empty_connection_state(ConnectionEnd),
     SecureRenegotation = NewCurrent#connection_state.secure_renegotiation,
     NewPending = EmptyPending#connection_state{secure_renegotiation = SecureRenegotation},
-    States#connection_states{current_read = NewCurrent,
+    States#connection_states{min_read_epoch = Current#connection_state.epoch,
+			     previous_read = Current,
+			     current_read = NewCurrent,
                              pending_read = NewPending
                             };
 
 activate_pending_connection_state(States = 
-                                  #connection_states{pending_write = Pending},
+                                  #connection_states{current_write = Current,
+						     pending_write = Pending},
                                   write) ->
-    NewCurrent = Pending#connection_state{sequence_number = 0},
+    NewCurrent = Pending#connection_state{epoch = connection_state_next_epoch(Current),
+					  sequence_number = 0},
     SecParams = Pending#connection_state.security_parameters,
     ConnectionEnd = SecParams#security_parameters.connection_end,
     EmptyPending = empty_connection_state(ConnectionEnd),
     SecureRenegotation = NewCurrent#connection_state.secure_renegotiation,
     NewPending = EmptyPending#connection_state{secure_renegotiation = SecureRenegotation},
-    States#connection_states{current_write = NewCurrent,
+    States#connection_states{previous_write = Current,
+			     current_write = NewCurrent,
                              pending_write = NewPending
                             }.
+
+%%--------------------------------------------------------------------
+-spec clear_previous_epoch(#connection_states{}) ->
+				  #connection_states{}.
+%%
+%% Description: Advance to min_read_epoch to the current read epoch.
+%%--------------------------------------------------------------------
+clear_previous_epoch(States =
+			 #connection_states{current_read = Current}) ->
+    States#connection_states{min_read_epoch = Current#connection_state.epoch}.
 
 %%--------------------------------------------------------------------
 -spec set_pending_cipher_state(#connection_states{}, #cipher_state{},
@@ -320,28 +441,63 @@ get_tls_records(Data, Buffer) ->
 
 get_tls_records_aux(<<?BYTE(?APPLICATION_DATA),?BYTE(MajVer),?BYTE(MinVer),
 		     ?UINT16(Length), Data:Length/binary, Rest/binary>>, 
-		    Acc) ->
+		    Acc) when MajVer < 128 ->
     get_tls_records_aux(Rest, [#ssl_tls{type = ?APPLICATION_DATA,
 					version = {MajVer, MinVer},
 					fragment = Data} | Acc]);
 get_tls_records_aux(<<?BYTE(?HANDSHAKE),?BYTE(MajVer),?BYTE(MinVer),
 		     ?UINT16(Length), 
-		     Data:Length/binary, Rest/binary>>, Acc) ->
+		     Data:Length/binary, Rest/binary>>, Acc) when MajVer < 128 ->
     get_tls_records_aux(Rest, [#ssl_tls{type = ?HANDSHAKE,
 					version = {MajVer, MinVer},
 					fragment = Data} | Acc]);
 get_tls_records_aux(<<?BYTE(?ALERT),?BYTE(MajVer),?BYTE(MinVer),
 		     ?UINT16(Length), Data:Length/binary, 
-		     Rest/binary>>, Acc) ->
+		     Rest/binary>>, Acc) when MajVer < 128 ->
     get_tls_records_aux(Rest, [#ssl_tls{type = ?ALERT,
 					version = {MajVer, MinVer},
 					fragment = Data} | Acc]);
 get_tls_records_aux(<<?BYTE(?CHANGE_CIPHER_SPEC),?BYTE(MajVer),?BYTE(MinVer),
 		     ?UINT16(Length), Data:Length/binary, Rest/binary>>, 
-		    Acc) ->
+		    Acc) when MajVer < 128 ->
     get_tls_records_aux(Rest, [#ssl_tls{type = ?CHANGE_CIPHER_SPEC,
 					version = {MajVer, MinVer},
 					fragment = Data} | Acc]);
+
+get_tls_records_aux(<<?BYTE(?APPLICATION_DATA),?BYTE(MajVer),?BYTE(MinVer),
+		      ?UINT16(Epoch), ?UINT48(SequenceNumber),
+		      ?UINT16(Length), Data:Length/binary, Rest/binary>>, 
+		    Acc) when MajVer >= 128 ->
+    get_tls_records_aux(Rest, [#ssl_tls{type = ?APPLICATION_DATA,
+					version = {MajVer, MinVer},
+					epoch = Epoch, sequence = SequenceNumber,
+					fragment = Data} | Acc]);
+get_tls_records_aux(<<?BYTE(?HANDSHAKE),?BYTE(MajVer),?BYTE(MinVer),
+		      ?UINT16(Epoch), ?UINT48(SequenceNumber),
+		      ?UINT16(Length), 
+		      Data:Length/binary, Rest/binary>>, Acc) when MajVer >= 128 ->
+    get_tls_records_aux(Rest, [#ssl_tls{type = ?HANDSHAKE,
+					version = {MajVer, MinVer},
+					epoch = Epoch, sequence = SequenceNumber,
+					fragment = Data} | Acc]);
+get_tls_records_aux(<<?BYTE(?ALERT),?BYTE(MajVer),?BYTE(MinVer),
+		      ?UINT16(Epoch), ?UINT48(SequenceNumber),
+		      ?UINT16(Length), Data:Length/binary, 
+		      Rest/binary>>, Acc) when MajVer >= 128 ->
+    get_tls_records_aux(Rest, [#ssl_tls{type = ?ALERT,
+					version = {MajVer, MinVer},
+					epoch = Epoch, sequence = SequenceNumber,
+					fragment = Data} | Acc]);
+get_tls_records_aux(<<?BYTE(?CHANGE_CIPHER_SPEC),?BYTE(MajVer),?BYTE(MinVer),
+		      ?UINT16(Epoch), ?UINT48(SequenceNumber),
+		      ?UINT16(Length), Data:Length/binary, Rest/binary>>, 
+		    Acc) when MajVer >= 128 ->
+    get_tls_records_aux(Rest, [#ssl_tls{type = ?CHANGE_CIPHER_SPEC,
+					version = {MajVer, MinVer},
+					epoch = Epoch, sequence = SequenceNumber,
+					fragment = Data} | Acc]);
+
+
 %% Matches an ssl v2 client hello message.
 %% The server must be able to receive such messages, from clients that
 %% are willing to use ssl v3 or higher, but have ssl v2 compatibility.
@@ -383,6 +539,10 @@ get_tls_records_aux(Data, Acc) ->
 %% Description: Creates a protocol version record from a version atom
 %% or vice versa.
 %%--------------------------------------------------------------------
+protocol_version('dtlsv1.2') ->
+    {254, 253};
+protocol_version(dtlsv1) ->
+    {254, 255};
 protocol_version('tlsv1.2') ->
     {3, 3};
 protocol_version('tlsv1.1') ->
@@ -393,6 +553,10 @@ protocol_version(sslv3) ->
     {3, 0};
 protocol_version(sslv2) -> %% Backwards compatibility
     {2, 0};
+protocol_version({254, 253}) ->
+    'dtlsv1.2';
+protocol_version({254, 255}) ->
+    dtlsv1;
 protocol_version({3, 3}) ->
     'tlsv1.2';
 protocol_version({3, 2}) ->
@@ -406,13 +570,18 @@ protocol_version({3, 0}) ->
 %%     
 %% Description: Lowes protocol version of two given versions 
 %%--------------------------------------------------------------------
-lowest_protocol_version(Version = {M, N}, {M, O})   when N < O ->
+lowest_protocol_version(Version = {M, N}, {M, O}) when M < 128, N < O ->
+    Version;
+lowest_protocol_version(Version = {M, N}, {M, O}) when M >= 128, N > O ->
     Version;
 lowest_protocol_version({M, _}, 
 			Version = {M, _}) ->
     Version;
-lowest_protocol_version(Version = {M,_}, 
-			{N, _}) when M < N ->
+lowest_protocol_version(Version = {M,_},
+			{N, _}) when M < 128, N < 128, M < N ->
+    Version;
+lowest_protocol_version(Version = {M,_},
+			{N, _}) when M >=128, N >= 128, M > N ->
     Version;
 lowest_protocol_version(_,Version) ->
     Version.
@@ -421,22 +590,31 @@ lowest_protocol_version(_,Version) ->
 %%     
 %% Description: Highest protocol version present in a list
 %%--------------------------------------------------------------------
-highest_protocol_version([]) ->
-    highest_protocol_version();
-highest_protocol_version(Versions) ->
-    [Ver | Vers] = Versions,
+highest_protocol_version([Ver | Vers]) ->
     highest_protocol_version(Ver, Vers).
 
 highest_protocol_version(Version, []) ->
     Version;
-highest_protocol_version(Version = {N, M}, [{N, O} | Rest])   when M > O ->
+highest_protocol_version(Version = {N, M}, [{N, O} | Rest])   when N < 128, M > O ->
+    highest_protocol_version(Version, Rest);
+highest_protocol_version(Version = {N, M}, [{N, O} | Rest])   when N >= 128, M < O ->
     highest_protocol_version(Version, Rest);
 highest_protocol_version({M, _}, [Version = {M, _} | Rest]) ->
     highest_protocol_version(Version, Rest);
-highest_protocol_version(Version = {M,_}, [{N,_} | Rest])  when M > N ->
+highest_protocol_version(Version = {M,_}, [{N,_} | Rest])  when M < 128, N < 128, M > N ->
+    highest_protocol_version(Version, Rest);
+highest_protocol_version(Version = {M,_}, [{N,_} | Rest])  when M >= 128, N >= 128, M < N ->
     highest_protocol_version(Version, Rest);
 highest_protocol_version(_, [Version | Rest]) ->
     highest_protocol_version(Version, Rest).
+
+%%--------------------------------------------------------------------
+-spec highest_connection_protocol_version(stream | datagram) -> tls_version().
+%%     
+%% Description: Highest protocol version for the connection
+%%--------------------------------------------------------------------
+highest_connection_protocol_version(ConnType) ->
+    highest_protocol_version(supported_protocol_versions(ConnType)).
 
 %%--------------------------------------------------------------------
 -spec supported_protocol_versions() -> [tls_version()].					 
@@ -444,34 +622,49 @@ highest_protocol_version(_, [Version | Rest]) ->
 %% Description: Protocol versions supported
 %%--------------------------------------------------------------------
 supported_protocol_versions() ->
+    supported_protocol_versions(stream).
+
+supported_protocol_versions(ConnType) ->
     Fun = fun(Version) ->
 		  protocol_version(Version) 
 	  end,
-    case application:get_env(ssl, protocol_version) of
+    case application:get_env(ssl, protocol_version_atom(ConnType)) of
 	undefined ->
-	    lists:map(Fun, supported_protocol_versions([]));
+	    lists:map(Fun, supported_protocol_versions(ConnType, []));
 	{ok, []} ->
-	    lists:map(Fun, supported_protocol_versions([]));
+	    lists:map(Fun, supported_protocol_versions(ConnType, []));
 	{ok, Vsns} when is_list(Vsns) ->
 	    Versions = lists:filter(fun is_acceptable_version/1, lists:map(Fun, Vsns)),
-	    supported_protocol_versions(Versions);
+	    supported_protocol_versions(ConnType, Versions);
 	{ok, Vsn} ->
 	    Versions = lists:filter(fun is_acceptable_version/1, [Fun(Vsn)]),
-	    supported_protocol_versions(Versions)
+	    supported_protocol_versions(ConnType, Versions)
     end.
 
-supported_protocol_versions([]) ->
-    Vsns = case sufficient_tlsv1_2_crypto_support() of
-	       true ->
-		   ?ALL_SUPPORTED_VERSIONS;
-	       false ->
-		   ?MIN_SUPPORTED_VERSIONS
-	   end,
-    application:set_env(ssl, protocol_version, Vsns),
+supported_protocol_versions(ConnType, []) ->
+    Vsns = supported_connection_protocol_versions(ConnType, []),
+    application:set_env(ssl, protocol_version_atom(ConnType), Vsns),
     Vsns;
 
-supported_protocol_versions([_|_] = Vsns) ->
+supported_protocol_versions(_Type, [_|_] = Vsns) ->
     Vsns.
+
+supported_connection_protocol_versions(stream, []) ->
+    case sufficient_tlsv1_2_crypto_support() of
+	true ->
+	    ?ALL_STREAM_SUPPORTED_VERSIONS;
+	false ->
+	    ?MIN_STREAM_SUPPORTED_VERSIONS
+    end;
+
+supported_connection_protocol_versions(datagram, []) ->
+    case sufficient_tlsv1_2_crypto_support() of
+	true ->
+	    ?ALL_DATAGRAM_SUPPORTED_VERSIONS;
+	false ->
+	    ?MIN_DATAGRAM_SUPPORTED_VERSIONS
+    end.
+
 
 %%--------------------------------------------------------------------
 -spec is_acceptable_version(tls_version()) -> boolean().
@@ -506,22 +699,50 @@ compressions() ->
 %%     
 %% Description: Decode cipher text
 %%--------------------------------------------------------------------
-decode_cipher_text(CipherText, ConnnectionStates0) ->
-    ReadState0 = ConnnectionStates0#connection_states.current_read,
+decode_cipher_text(CipherText = #ssl_tls{version = {254, _}},
+					 ConnectionStates0) ->
+%%    io:format("CipherText: ~p~n", [CipherText]),
+    #ssl_tls{epoch = Epoch, sequence = SeqNo} = CipherText,
+    ReadState0 = connection_state_by_epoch(ConnectionStates0, Epoch, read),
+    io:format("Epoch: ~w~n", [Epoch]),
+%%    io:format("current_read: ~p~n", [ConnectionStates0#connection_states.current_read]),
     #connection_state{compression_state = CompressionS0,
-		      security_parameters = SecParams} = ReadState0,
+		      security_parameters = SecParams,
+		      sequence_number = ReadSeqNo} = ReadState0,
     CompressAlg = SecParams#security_parameters.compression_algorithm,
    case decipher(CipherText, ReadState0) of
        {Compressed, ReadState1} ->
 	   {Plain, CompressionS1} = uncompress(CompressAlg, 
 					       Compressed, CompressionS0),
-	   ConnnectionStates = ConnnectionStates0#connection_states{
-				 current_read = ReadState1#connection_state{
-						  compression_state = CompressionS1}},
-	   {Plain, ConnnectionStates};
+	   ConnectionStates = set_connection_state_by_epoch(
+				 ConnectionStates0,
+				 ReadState1#connection_state{
+				   compression_state = CompressionS1,
+				   sequence_number =
+				       erlang:max(ReadSeqNo, SeqNo)}, read),
+%%	   io:format("Plain:~p~n", [Plain]),
+	   {Plain, ConnectionStates};
        #alert{} = Alert ->
 	   Alert
+   end;
+
+decode_cipher_text(CipherText, ConnnectionStates0) ->
+    ReadState0 = ConnnectionStates0#connection_states.current_read,
+    #connection_state{compression_state = CompressionS0,
+                      security_parameters = SecParams} = ReadState0,
+    CompressAlg = SecParams#security_parameters.compression_algorithm,
+   case decipher(CipherText, ReadState0) of
+       {Compressed, ReadState1} ->
+           {Plain, CompressionS1} = uncompress(CompressAlg,
+                                               Compressed, CompressionS0),
+           ConnnectionStates = ConnnectionStates0#connection_states{
+                                 current_read = ReadState1#connection_state{
+                                                  compression_state = CompressionS1}},
+           {Plain, ConnnectionStates};
+       #alert{} = Alert ->
+           Alert
    end.
+
 %%--------------------------------------------------------------------
 -spec encode_data(binary(), tls_version(), #connection_states{}) ->
 			 {iolist(), #connection_states{}}.
@@ -533,17 +754,19 @@ encode_data(Frag, Version,
 				 security_parameters =
 				     #security_parameters{bulk_cipher_algorithm = BCA}}} =
 		ConnectionStates) ->
+    ssl_handshake:dump_connection_state("encode_data", ConnectionStates#connection_states.current_write),
     Data = split_bin(Frag, ?MAX_PLAIN_TEXT_LENGTH, Version, BCA),
     encode_iolist(?APPLICATION_DATA, Data, Version, ConnectionStates).
 
 %%--------------------------------------------------------------------
--spec encode_handshake(iolist(), tls_version(), #connection_states{}) ->
-			      {iolist(), #connection_states{}}.
+-spec encode_handshake(iolist(), tls_version(), #connection_state{}) ->
+			      {iolist(), #connection_state{}}.
 %%
 %% Description: Encodes a handshake message to send on the ssl-socket.
 %%--------------------------------------------------------------------
-encode_handshake(Frag, Version, ConnectionStates) ->
-    encode_plain_text(?HANDSHAKE, Version, Frag, ConnectionStates).
+encode_handshake(Frag, Version, ConnectionState)
+  when is_record(ConnectionState, connection_state) ->
+    encode_plain_text(?HANDSHAKE, Version, Frag, ConnectionState).
 
 %%--------------------------------------------------------------------
 -spec encode_alert_record(#alert{}, tls_version(), #connection_states{}) ->
@@ -557,13 +780,14 @@ encode_alert_record(#alert{level = Level, description = Description},
 		      ConnectionStates).
 
 %%--------------------------------------------------------------------
--spec encode_change_cipher_spec(tls_version(), #connection_states{}) ->
-				       {iolist(), #connection_states{}}.
+-spec encode_change_cipher_spec(tls_version(), #connection_state{}) ->
+				       {iolist(), #connection_state{}}.
 %%
 %% Description: Encodes a change_cipher_spec-message to send on the ssl socket.
 %%--------------------------------------------------------------------
-encode_change_cipher_spec(Version, ConnectionStates) ->
-    encode_plain_text(?CHANGE_CIPHER_SPEC, Version, <<1:8>>, ConnectionStates).
+encode_change_cipher_spec(Version, ConnectionState)
+  when is_record(ConnectionState, connection_state) ->
+    encode_plain_text(?CHANGE_CIPHER_SPEC, Version, <<1:8>>, ConnectionState).
 
 %%--------------------------------------------------------------------
 %%% Internal functions
@@ -576,19 +800,16 @@ encode_iolist(Type, Data, Version, ConnectionStates0) ->
 		    end, {ConnectionStates0, []}, Data),
     {lists:reverse(EncodedMsg), ConnectionStates}.
 
-highest_protocol_version() ->
-    highest_protocol_version(supported_protocol_versions()).
-
-initial_connection_state(ConnectionEnd) ->
+initial_connection_state(ConnectionEnd, ConnType) ->
     #connection_state{security_parameters =
-			  initial_security_params(ConnectionEnd),
-                      sequence_number = 0
+			  initial_security_params(ConnectionEnd, ConnType),
+		      epoch = 0, sequence_number = 0
                      }.
 
-initial_security_params(ConnectionEnd) ->
+initial_security_params(ConnectionEnd, ConnType) ->
     SecParams = #security_parameters{connection_end = ConnectionEnd,
 				     compression_algorithm = ?NULL},
-    ssl_cipher:security_parameters(highest_protocol_version(), ?TLS_NULL_WITH_NULL_NULL,
+    ssl_cipher:security_parameters(highest_connection_protocol_version(ConnType), ?TLS_NULL_WITH_NULL_NULL,
 				   SecParams).
 
 empty_connection_state(ConnectionEnd) ->
@@ -629,19 +850,30 @@ do_split_bin(Bin, ChunkSize, Acc) ->
             lists:reverse(Acc, [Bin])
     end.
 
-encode_plain_text(Type, Version, Data, ConnectionStates) ->
-    #connection_states{current_write=#connection_state{
-			 compression_state=CompS0,
-			 security_parameters=
-			 #security_parameters{compression_algorithm=CompAlg}
-			}=CS0} = ConnectionStates,
+encode_plain_text(Type, Version, Data,
+		  #connection_state{
+			   compression_state=CompS0,
+			   epoch=Epoch,
+			   sequence_number=Seq,
+			   security_parameters=
+			       #security_parameters{compression_algorithm=CompAlg}
+			  }=CS0) ->
     {Comp, CompS1} = compress(CompAlg, Data, CompS0),
     CS1 = CS0#connection_state{compression_state = CompS1},
     {CipherText, CS2} = cipher(Type, Version, Comp, CS1),
-    CTBin = encode_tls_cipher_text(Type, Version, CipherText),
-    {CTBin, ConnectionStates#connection_states{current_write = CS2}}.
+    CTBin = encode_tls_cipher_text(Type, Version, Epoch, Seq, CipherText),
+    {CTBin, CS2};
 
-encode_tls_cipher_text(Type, {MajVer, MinVer}, Fragment) ->
+encode_plain_text(Type, Version, Data, ConnectionStates) ->
+    #connection_states{current_write=CS0} = ConnectionStates,
+    {CTBin, CS1} = encode_plain_text(Type, Version, Data, CS0),
+    {CTBin, ConnectionStates#connection_states{current_write = CS1}}.
+
+encode_tls_cipher_text(Type, {MajVer, MinVer}, Epoch, Seq, Fragment) when MajVer >= 128->
+    Length = erlang:iolist_size(Fragment),
+    [<<?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Epoch),
+       ?UINT48(Seq), ?UINT16(Length)>>, Fragment];
+encode_tls_cipher_text(Type, {MajVer, MinVer}, _Epoch, _SeqNo, Fragment) ->
     Length = erlang:iolist_size(Fragment),
     [<<?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>, Fragment].
 
@@ -651,7 +883,7 @@ cipher(Type, Version, Fragment, CS0) ->
 			  #security_parameters{bulk_cipher_algorithm = BCA}} = CS0,
     cipher(BCA, Type, Version, Fragment, CipherS0, CS0).
 
- cipher(BCA, Type, Version, Fragment, CipherS0, CS0)
+cipher(BCA, Type, Version, Fragment, CipherS0, CS0)
   when BCA == ?AES_GCM ->
     Seq = CS0#connection_state.sequence_number,
     CS1 = bump_seqno(CS0),
@@ -671,10 +903,14 @@ cipher(BCA, Type, Version, Fragment, CipherS0, CS0) ->
 
 decipher(TLS=#ssl_tls{type=Type, version=Version, fragment=Fragment}, CS0)
   when CS0#connection_state.security_parameters#security_parameters.bulk_cipher_algorithm == ?AES_GCM ->
+    io:format("AES-GGM...................~n"),
     SP = CS0#connection_state.security_parameters,
     BCA = SP#security_parameters.bulk_cipher_algorithm,
     CipherS0 = CS0#connection_state.cipher_state,
     Seq = CS0#connection_state.sequence_number,
+    io:format("SecurityParameters: ~p~n", [SP]),
+    io:format("ConnectionState: ~p~n", [CS0]),
+    io:format("SequencNumber: ~p~n", [Seq]),
     {MajVer, MinVer} = Version,
     Length = size(Fragment) - 24,
     AAD = <<Seq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>,
@@ -687,16 +923,44 @@ decipher(TLS=#ssl_tls{type=Type, version=Version, fragment=Fragment}, CS0)
 	    Alert
     end;
 
+decipher(TLS=#ssl_tls{type=Type, version=Version={254, _},
+		      epoch = Epoch, sequence = SeqNo,
+		      fragment=Fragment}, CS0) ->
+    %% io:format("Decipher DTLS~n"),
+    SP = CS0#connection_state.security_parameters,
+    BCA = SP#security_parameters.bulk_cipher_algorithm, 
+    HashSz = SP#security_parameters.hash_size,
+    CipherS0 = CS0#connection_state.cipher_state,
+    %% io:format("SecurityParameters: ~p~n", [SP]),
+    %% io:format("ConnectionState: ~p~n", [CS0]),
+    case ssl_cipher:decipher(BCA, HashSz, CipherS0, Fragment, Version) of
+	{T, Mac, CipherS1} ->
+	    CS1 = CS0#connection_state{cipher_state = CipherS1},
+	    TLength = size(T),
+	    MacHash = hash_with_seqno(CS1, Type, Version, Epoch, SeqNo, TLength, T),
+	    %% io:format("MAC: got:~n~s~nwant:~n~s~n", [ssl_handshake:hexdump(Mac), ssl_handshake:hexdump(MacHash)]),
+	    case is_correct_mac(Mac, MacHash) of
+		true ->
+		    {TLS#ssl_tls{fragment = T}, CS1};
+		false ->
+		    ?ALERT_REC(?FATAL, ?BAD_RECORD_MAC)
+	    end;
+	#alert{} = Alert ->
+	    Alert
+    end;
+
 decipher(TLS=#ssl_tls{type=Type, version=Version, fragment=Fragment}, CS0) ->
     SP = CS0#connection_state.security_parameters,
     BCA = SP#security_parameters.bulk_cipher_algorithm, 
     HashSz = SP#security_parameters.hash_size,
     CipherS0 = CS0#connection_state.cipher_state,
+    ssl_handshake:dump_connection_state("decipher", CS0),
     case ssl_cipher:decipher(BCA, HashSz, CipherS0, Fragment, Version) of
 	{T, Mac, CipherS1} ->
 	    CS1 = CS0#connection_state{cipher_state = CipherS1},
 	    TLength = size(T),
 	    {MacHash, CS2} = hash_and_bump_seqno(CS1, Type, Version, TLength, T),
+%%	    io:format("MAC: got:~n~s~nwant:~n~s~n", [ssl_handshake:hexdump(Mac), ssl_handshake:hexdump(MacHash)]),
 	    case is_correct_mac(Mac, MacHash) of
 		true ->		  
 		    {TLS#ssl_tls{fragment = T}, CS2};
@@ -715,11 +979,36 @@ uncompress(?NULL, Data = #ssl_tls{type = _Type,
 compress(?NULL, Data, CS) ->
     {Data, CS}.
 
-hash_and_bump_seqno(#connection_state{sequence_number = SeqNo,
+hash_with_seqno(#connection_state{mac_secret = MacSecret,
+				 security_parameters =
+				     SecPars},
+	       Type, Version = {254, _},
+	       Epoch, SeqNo, Length, Fragment) ->
+    mac_hash(Version,
+	     SecPars#security_parameters.mac_algorithm,
+	     MacSecret, (Epoch bsl 48) + SeqNo, Type,
+	     Length, Fragment).
+
+hash_and_bump_seqno(#connection_state{epoch = Epoch,
+				      sequence_number = SeqNo,
+				      mac_secret = MacSecret,
+				      security_parameters =
+				      SecPars} = CS0,
+		    Type, Version = {254, _}, Length, Fragment) ->
+    io:format("Hash with Epoch/Seq: ~w/~w~n", [Epoch, SeqNo]),
+    Hash = mac_hash(Version,
+		    SecPars#security_parameters.mac_algorithm,
+		    MacSecret, (Epoch bsl 48) + SeqNo, Type,
+		    Length, Fragment),
+    {Hash, bump_seqno(CS0)};
+hash_and_bump_seqno(#connection_state{epoch = Epoch,
+				      sequence_number = SeqNo,
 				      mac_secret = MacSecret,
 				      security_parameters = 
 				      SecPars} = CS0,
 		    Type, Version, Length, Fragment) ->
+    io:format("Epoch ~w, Hash with Seq: ~w~n", [Epoch, SeqNo]),
+    io:format("MacSecret:~n~s~n", [ssl_handshake:hexdump(MacSecret)]),
     Hash = mac_hash(Version, 
 		    SecPars#security_parameters.mac_algorithm,
 		    MacSecret, SeqNo, Type,
@@ -728,6 +1017,11 @@ hash_and_bump_seqno(#connection_state{sequence_number = SeqNo,
 
 bump_seqno(#connection_state{sequence_number = SeqNo} = CS0) ->
     CS0#connection_state{sequence_number = SeqNo+1}.
+
+connection_state_next_epoch(undefined) ->
+    0;
+connection_state_next_epoch(State) ->
+    State#connection_state.epoch + 1.
 
 is_correct_mac(Mac, Mac) ->
     true;
@@ -739,10 +1033,16 @@ mac_hash({_,_}, ?NULL, _MacSecret, _SeqNo, _Type,
     <<>>;
 mac_hash({3, 0}, MacAlg, MacSecret, SeqNo, Type, Length, Fragment) ->
     ssl_ssl3:mac_hash(MacAlg, MacSecret, SeqNo, Type, Length, Fragment);
-mac_hash({3, N} = Version, MacAlg, MacSecret, SeqNo, Type, Length, Fragment)  
-  when N =:= 1; N =:= 2; N =:= 3 ->
-    ssl_tls1:mac_hash(MacAlg, MacSecret, SeqNo, Type, Version, 
+mac_hash({Major, Minor} = Version, MacAlg, MacSecret, SeqNo, Type, Length, Fragment)
+  when (Major == 3 andalso Minor >= 1) orelse
+       Major == 254 ->
+    ssl_tls1:mac_hash(MacAlg, MacSecret, SeqNo, Type, Version,
 		      Length, Fragment).
 
 sufficient_tlsv1_2_crypto_support() ->
     proplists:get_bool(sha256, crypto:algorithms()).
+
+protocol_version_atom(stream) ->
+    protocol_version;
+protocol_version_atom(datagram) ->
+    protocol_version_datagram.

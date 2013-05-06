@@ -30,7 +30,7 @@
 	 connect/3, connect/2, connect/4, connection_info/1,
 	 controlling_process/2, listen/2, peername/1, peercert/1,
 	 recv/2, recv/3, send/2, getopts/2, setopts/2, sockname/1,
-	 versions/0, session_info/1, format_error/1,
+	 versions/0, versions/1, session_info/1, format_error/1,
 	 renegotiate/1, prf/5, clear_pem_cache/0, random_bytes/1, negotiated_next_protocol/1]).
 
 -include("ssl_internal.hrl").
@@ -84,6 +84,8 @@
 				       ClosedTag::atom(), ErrTag::atom()}}.
 -type prf_random() :: client_random | server_random.
 
+-define(IS_SOCKET(Socket), (is_port(Socket) orelse is_pid(Socket))).
+
 %%--------------------------------------------------------------------
 -spec start() -> ok  | {error, reason()}.
 -spec start(permanent | transient | temporary) -> ok | {error, reason()}.
@@ -122,17 +124,21 @@ stop() ->
 %%
 %% Description: Connect to an ssl server.
 %%--------------------------------------------------------------------
-connect(Socket, SslOptions) when is_port(Socket) ->
+connect(Socket, SslOptions) when ?IS_SOCKET(Socket) ->
     connect(Socket, SslOptions, infinity).
 
-connect(Socket, SslOptions0, Timeout) when is_port(Socket) ->
-    {Transport,_,_,_} = proplists:get_value(cb_info, SslOptions0, 
-					      {gen_tcp, tcp, tcp_closed, tcp_error}),    
+connect(Socket, SslOptions0, Timeout) when ?IS_SOCKET(Socket) ->
+    ?DEBUG("SslOption Connect: ~p~n",
+	   [handle_option(cb_info, SslOptions0, {gen_tcp, tcp, tcp_closed, tcp_error})]),
+    {Transport,_,_,_} = handle_option(cb_info, SslOptions0,
+					      {gen_tcp, tcp, tcp_closed, tcp_error}),
+    ?DEBUG("Transport Connect: ~p~n", [Transport]),
     EmulatedOptions = emulated_options(),
     {ok, SocketValues} = ssl_socket:getopts(Transport, Socket, EmulatedOptions),
     try handle_options(SslOptions0 ++ SocketValues, client) of
 	{ok, #config{cb = CbInfo, ssl = SslOptions, emulated = EmOpts}} ->
 	   
+	    ?DEBUG("Transport Connect: ~p~n", [CbInfo]),
 	    ok = ssl_socket:setopts(Transport, Socket, internal_inet_values()),
 	    case ssl_socket:peername(Transport, Socket) of
 		{ok, {Address, Port}} ->
@@ -181,6 +187,7 @@ listen(Port, Options0) ->
 	Error = {error, _} ->
 	    Error
     end.
+
 %%--------------------------------------------------------------------
 -spec transport_accept(#sslsocket{}) -> {ok, #sslsocket{}} |
 					{error, reason()}.
@@ -233,16 +240,21 @@ ssl_accept(ListenSocket) ->
 ssl_accept(#sslsocket{} = Socket, Timeout) ->
     ssl_connection:handshake(Socket, Timeout);
     
-ssl_accept(ListenSocket, SslOptions)  when is_port(ListenSocket) -> 
+ssl_accept(ListenSocket, SslOptions)  when ?IS_SOCKET(ListenSocket) -> 
     ssl_accept(ListenSocket, SslOptions, infinity).
 
-ssl_accept(Socket, SslOptions, Timeout) when is_port(Socket) -> 
-    {Transport,_,_,_} = 
-	proplists:get_value(cb_info, SslOptions, {gen_tcp, tcp, tcp_closed, tcp_error}),    
+ssl_accept(Socket, SslOptions, Timeout) when ?IS_SOCKET(Socket) -> 
+    ?DEBUG("SslOption Ssl Accept: ~p~n",
+	   [handle_option(cb_info, SslOptions, {gen_tcp, tcp, tcp_closed, tcp_error})]),
+    {Transport,_,_,_} =
+	handle_option(cb_info, SslOptions, {gen_tcp, tcp, tcp_closed, tcp_error}),
+    ?DEBUG("Transport Ssl Accept: ~p~n", [Transport]),
+
     EmulatedOptions = emulated_options(),
     {ok, SocketValues} = ssl_socket:getopts(Transport, Socket, EmulatedOptions),
     try handle_options(SslOptions ++ SocketValues, server) of
 	{ok, #config{cb = CbInfo, ssl = SslOpts, emulated = EmOpts}} ->
+	    ?DEBUG("Transport Ssl Accept: ~p~n", [CbInfo]),
 	    ok = ssl_socket:setopts(Transport, Socket, internal_inet_values()),
 	    {ok, Port} = ssl_socket:port(Transport, Socket),
 	    ssl_connection:ssl_accept(Port, Socket,
@@ -283,7 +295,7 @@ recv(Socket, Length) ->
 recv(#sslsocket{pid = Pid}, Length, Timeout) when is_pid(Pid) ->
     ssl_connection:recv(Pid, Length, Timeout);
 recv(#sslsocket{pid = {Listen, 
-		       #config{cb={Transport, _, _, _}}}}, _,_) when is_port(Listen)->
+		       #config{cb={Transport, _, _, _}}}}, _,_) when ?IS_SOCKET(Listen)->
     Transport:recv(Listen, 0). %% {error,enotconn}
 
 %%--------------------------------------------------------------------
@@ -296,7 +308,7 @@ controlling_process(#sslsocket{pid = Pid}, NewOwner) when is_pid(Pid), is_pid(Ne
     ssl_connection:new_user(Pid, NewOwner);
 controlling_process(#sslsocket{pid = {Listen,
 				      #config{cb={Transport, _, _, _}}}}, 
-		    NewOwner) when is_port(Listen),
+		    NewOwner) when ?IS_SOCKET(Listen),
 				   is_pid(NewOwner) ->
     Transport:controlling_process(Listen, NewOwner).
 
@@ -308,7 +320,7 @@ controlling_process(#sslsocket{pid = {Listen,
 %%--------------------------------------------------------------------
 connection_info(#sslsocket{pid = Pid}) when is_pid(Pid) ->
     ssl_connection:info(Pid);
-connection_info(#sslsocket{pid = {Listen, _}}) when is_port(Listen) ->
+connection_info(#sslsocket{pid = {Listen, _}}) when ?IS_SOCKET(Listen) ->
     {error, enotconn}.
 
 %%--------------------------------------------------------------------
@@ -333,7 +345,7 @@ peercert(#sslsocket{pid = Pid}) when is_pid(Pid) ->
         Result ->
 	    Result
     end;
-peercert(#sslsocket{pid = {Listen, _}}) when is_port(Listen) ->
+peercert(#sslsocket{pid = {Listen, _}}) when ?IS_SOCKET(Listen) ->
     {error, enotconn}.
 
 %%--------------------------------------------------------------------
@@ -363,11 +375,11 @@ cipher_suites() ->
     cipher_suites(erlang).
   
 cipher_suites(erlang) ->
-    Version = ssl_record:highest_protocol_version([]),
+    Version = ssl_record:highest_connection_protocol_version(stream),
     [suite_definition(S) || S <- cipher_suites(Version, [])];
 
 cipher_suites(openssl) ->
-    Version = ssl_record:highest_protocol_version([]),
+    Version = ssl_record:highest_connection_protocol_version(stream),
     [ssl_cipher:openssl_suite_name(S) || S <- cipher_suites(Version, [])].
 
 %%--------------------------------------------------------------------
@@ -426,7 +438,7 @@ setopts(#sslsocket{}, Options) ->
 %% Description: Same as gen_tcp:shutdown/2
 %%--------------------------------------------------------------------
 shutdown(#sslsocket{pid = {Listen, #config{cb={Transport,_, _, _}}}},
-	 How) when is_port(Listen) ->
+	 How) when ?IS_SOCKET(Listen) ->
     Transport:shutdown(Listen, How);
 shutdown(#sslsocket{pid = Pid}, How) ->
     ssl_connection:shutdown(Pid, How).
@@ -436,7 +448,7 @@ shutdown(#sslsocket{pid = Pid}, How) ->
 %%		     
 %% Description: Same as inet:sockname/1
 %%--------------------------------------------------------------------
-sockname(#sslsocket{pid = {Listen,  #config{cb={Transport,_, _, _}}}}) when is_port(Listen) ->
+sockname(#sslsocket{pid = {Listen,  #config{cb={Transport,_, _, _}}}}) when ?IS_SOCKET(Listen) ->
     ssl_socket:sockname(Transport, Listen);
 
 sockname(#sslsocket{pid = Pid, fd = {Transport, Socket}}) when is_pid(Pid) ->
@@ -450,21 +462,32 @@ sockname(#sslsocket{pid = Pid, fd = {Transport, Socket}}) when is_pid(Pid) ->
 %%--------------------------------------------------------------------
 session_info(#sslsocket{pid = Pid}) when is_pid(Pid) ->
     ssl_connection:session_info(Pid);
-session_info(#sslsocket{pid = {Listen,_}}) when is_port(Listen) ->
+session_info(#sslsocket{pid = {Listen,_}}) when ?IS_SOCKET(Listen) ->
     {error, enotconn}.
 
 %%---------------------------------------------------------------
--spec versions() -> [{ssl_app, string()} | {supported, [tls_atom_version()]} | 
+-spec versions(stream|datagram) -> [{ssl_app, string()} | {supported, [tls_atom_version()]} |
+				    {available, [tls_atom_version()]}].
+%%
+%% Description: Returns a list of relevant versions.
+%%--------------------------------------------------------------------
+versions(ConnType) ->
+    Vsns = ssl_record:supported_protocol_versions(ConnType),
+    SupportedVsns = [ssl_record:protocol_version(Vsn) || Vsn <- Vsns],
+    AvailableVsns = case ConnType of
+			datagram -> ?ALL_DATAGRAM_SUPPORTED_VERSIONS;
+			stream   -> ?ALL_STREAM_SUPPORTED_VERSIONS
+		    end,
+    [{ssl_app, ?VSN}, {supported, SupportedVsns}, {available, AvailableVsns}].
+
+%%---------------------------------------------------------------
+-spec versions() -> [{ssl_app, string()} | {supported, [tls_atom_version()]} |
 		     {available, [tls_atom_version()]}].
 %%
 %% Description: Returns a list of relevant versions.
 %%--------------------------------------------------------------------
 versions() ->
-    Vsns = ssl_record:supported_protocol_versions(),
-    SupportedVsns = [ssl_record:protocol_version(Vsn) || Vsn <- Vsns],
-    AvailableVsns = ?ALL_SUPPORTED_VERSIONS,
-    [{ssl_app, ?VSN}, {supported, SupportedVsns}, {available, AvailableVsns}].
-
+    versions(stream).
 
 %%---------------------------------------------------------------
 -spec renegotiate(#sslsocket{}) -> ok | {error, reason()}.
@@ -473,7 +496,7 @@ versions() ->
 %%--------------------------------------------------------------------
 renegotiate(#sslsocket{pid = Pid}) when is_pid(Pid) ->
     ssl_connection:renegotiation(Pid);
-renegotiate(#sslsocket{pid = {Listen,_}}) when is_port(Listen) ->
+renegotiate(#sslsocket{pid = {Listen,_}}) when ?IS_SOCKET(Listen) ->
     {error, enotconn}.
 
 %%--------------------------------------------------------------------
@@ -486,7 +509,7 @@ renegotiate(#sslsocket{pid = {Listen,_}}) when is_port(Listen) ->
 prf(#sslsocket{pid = Pid},
     Secret, Label, Seed, WantedLength) when is_pid(Pid) ->
     ssl_connection:prf(Pid, Secret, Label, Seed, WantedLength);
-prf(#sslsocket{pid = {Listen,_}}, _,_,_,_) when is_port(Listen) ->
+prf(#sslsocket{pid = {Listen,_}}, _,_,_,_) when ?IS_SOCKET(Listen) ->
     {error, enotconn}.
 
 %%--------------------------------------------------------------------
@@ -615,10 +638,13 @@ handle_options(Opts0, _Role) ->
 	end,
 
     CertFile = handle_option(certfile, Opts, <<>>),
-    
+
+    CbInfo = handle_option(cb_info, Opts, {gen_tcp, tcp, tcp_closed, tcp_error}),
+    ConnType = connection_type(CbInfo),
+
     Versions = case handle_option(versions, Opts, []) of
 		   [] ->
-		       ssl_record:supported_protocol_versions();  
+		       ssl_record:supported_protocol_versions(ConnType);  
 		   Vsns  ->
 		       [ssl_record:protocol_version(Vsn) || Vsn <- Vsns]
 	       end,  
@@ -629,6 +655,7 @@ handle_options(Opts0, _Role) ->
       verify_fun = VerifyFun,
       fail_if_no_peer_cert = FailIfNoPeerCert,
       verify_client_once =  handle_option(verify_client_once, Opts, false),
+      verify_client_hello =  handle_option(verify_client_hello, Opts, false),
       depth      = handle_option(depth,  Opts, 1),
       cert       = handle_option(cert, Opts, undefined),
       certfile   = CertFile,
@@ -657,9 +684,8 @@ handle_options(Opts0, _Role) ->
 			  handle_option(client_preferred_next_protocols, Opts, undefined))
      },
 
-    CbInfo  = proplists:get_value(cb_info, Opts, {gen_tcp, tcp, tcp_closed, tcp_error}),    
     SslOptions = [versions, verify, verify_fun,
-		  fail_if_no_peer_cert, verify_client_once,
+		  fail_if_no_peer_cert, verify_client_once, verify_client_hello,
 		  depth, cert, certfile, key, keyfile,
 		  password, cacerts, cacertfile, dh, dhfile,
 		  user_lookup_fun, psk_identity, srp_identity, ciphers,
@@ -710,6 +736,9 @@ validate_option(fail_if_no_peer_cert, Value)
   when Value == true; Value == false ->
     Value;
 validate_option(verify_client_once, Value) 
+  when Value == true; Value == false ->
+    Value;
+validate_option(verify_client_hello, Value) 
   when Value == true; Value == false ->
     Value;
 validate_option(depth, Value) when is_integer(Value), 
@@ -780,7 +809,7 @@ validate_option(srp_identity, {Username, Password})
   when is_list(Username), is_list(Password), Username =/= "", length(Username) =< 255 ->
     {list_to_binary(Username), list_to_binary(Password)};
 validate_option(ciphers, Value)  when is_list(Value) ->
-    Version = ssl_record:highest_protocol_version([]),
+    Version = ssl_record:highest_connection_protocol_version(stream),
     try cipher_suites(Version, Value)
     catch
 	exit:_ ->
@@ -809,7 +838,7 @@ validate_option(erl_dist,Value) when Value == true;
     Value;
 validate_option(client_preferred_next_protocols = Opt, {Precedence, PreferredProtocols} = Value)
   when is_list(PreferredProtocols) ->
-    case ssl_record:highest_protocol_version([]) of
+    case ssl_record:highest_connection_protocol_version(stream) of
 	{3,0} ->
 	    throw({error, {options, {not_supported_in_sslv3, {Opt, Value}}}});
 	_ ->
@@ -820,7 +849,7 @@ validate_option(client_preferred_next_protocols = Opt, {Precedence, PreferredPro
 validate_option(client_preferred_next_protocols = Opt, {Precedence, PreferredProtocols, Default} = Value)
       when is_list(PreferredProtocols), is_binary(Default),
            byte_size(Default) > 0, byte_size(Default) < 256 ->
-    case ssl_record:highest_protocol_version([]) of
+    case ssl_record:highest_connection_protocol_version(stream) of
 	{3,0} ->
 	    throw({error, {options, {not_supported_in_sslv3, {Opt, Value}}}});
 	_ ->
@@ -832,7 +861,7 @@ validate_option(client_preferred_next_protocols = Opt, {Precedence, PreferredPro
 validate_option(client_preferred_next_protocols, undefined) ->
     undefined;
 validate_option(next_protocols_advertised = Opt, Value) when is_list(Value) ->
-    case ssl_record:highest_protocol_version([]) of
+    case ssl_record:highest_connection_protocol_version(stream) of
 	{3,0} ->
 	    throw({error, {options, {not_supported_in_sslv3, {Opt, Value}}}});
 	_ ->
@@ -842,6 +871,12 @@ validate_option(next_protocols_advertised = Opt, Value) when is_list(Value) ->
 
 validate_option(next_protocols_advertised, undefined) ->
     undefined;
+
+validate_option(cb_info, Value = {_,_,_,_}) ->
+    Value;
+validate_option(cb_info, Module) when is_atom(Module) ->
+    Module:callback_info();
+
 validate_option(Opt, Value) ->
     throw({error, {options, {Opt, Value}}}).
 
@@ -867,6 +902,8 @@ validate_versions([], Versions) ->
 validate_versions([Version | Rest], Versions) when Version == 'tlsv1.2';
                                                    Version == 'tlsv1.1';
                                                    Version == tlsv1; 
+                                                   Version == 'dtlsv1.2';
+                                                   Version == dtlsv1;
                                                    Version == sslv3 ->
     validate_versions(Rest, Versions);					   
 validate_versions([Ver| _], Versions) ->
@@ -1027,3 +1064,8 @@ make_next_protocol_selector({server, AllProtocols, DefaultProtocol}) ->
 		    PreferredProtocol
 	    end
     end.
+
+connection_type({gen_tcp, _, _, _}) ->
+    stream;
+connection_type({Module, _, _, _}) ->
+    Module:connection_type(listen).

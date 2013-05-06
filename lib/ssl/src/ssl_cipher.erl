@@ -49,6 +49,8 @@
 %%-------------------------------------------------------------------
 security_parameters(Version, CipherSuite, SecParams) ->
     { _, Cipher, Hash, PrfHashAlg} = suite_definition(CipherSuite),
+    io:format("Suite: ~w, Hash: ~w~n", [CipherSuite, Hash]),
+    io:format("BCA: ~w~n", [bulk_cipher_algorithm(Cipher)]),
     SecParams#security_parameters{
       cipher_suite = CipherSuite,
       bulk_cipher_algorithm = bulk_cipher_algorithm(Cipher),
@@ -67,12 +69,20 @@ security_parameters(Version, CipherSuite, SecParams) ->
 %% Description: Initializes the #cipher_state according to BCA
 %%-------------------------------------------------------------------
 cipher_init(?AES_GCM, IVS, IV, Key) ->
+    io:format("aes_gcm128_init~n"),
+    io:format("IVS: ~w~n", [IVS]),
+    io:format("Key: ~s~n", [ssl_handshake:hexdump(Key)]),
+    io:format("IV: ~s~n", [ssl_handshake:hexdump(IV)]),
+
     Ctx = crypto:aes_gcm128_init(Key),
     #cipher_state{iv_size = IVS, iv = IV, key = Key, state = Ctx, nonce = 1};
 cipher_init(?RC4, IVS, IV, Key) ->
     State = crypto:rc4_set_key(Key),
     #cipher_state{iv_size = IVS, iv = IV, key = Key, state = State};
 cipher_init(_BCA, IVS, IV, Key) ->
+    io:format("IVS: ~w~n", [IVS]),
+    io:format("Key: ~s~n", [ssl_handshake:hexdump(Key)]),
+    io:format("IV: ~s~n", [ssl_handshake:hexdump(IV)]),
     #cipher_state{iv_size = IVS, iv = IV, key = Key}.
 
 %%--------------------------------------------------------------------
@@ -108,7 +118,11 @@ cipher(?AES_CBC, CipherState, Mac, Fragment, Version) ->
 cipher_aead(?AES_GCM, #cipher_state{iv = IV0, state = Ctx, nonce = Nonce} = CipherState0, AAD, Fragment, _Version) ->
     <<Salt:4/bytes, _/binary>> = IV0,
     IV1 = <<Salt/binary, Nonce:64/integer>>,
+    io:format("IV:~n~s~n~p~n", [ssl_handshake:hexdump(IV1), IV1]),
+    io:format("Fragment:~n~s~n~p~n", [ssl_handshake:hexdump(Fragment), Fragment]),
     {Content, CipherTag} = crypto:aes_gcm128_encrypt(Ctx, IV1, AAD, Fragment),
+    io:format("Content:~n~s~n~p~n", [ssl_handshake:hexdump(Content), Content]),
+    io:format("CipherTag:~n~s~n~p~n", [ssl_handshake:hexdump(CipherTag), CipherTag]),
     {<<Nonce:64/integer, Content/binary, CipherTag/binary>>, CipherState0#cipher_state{nonce = Nonce + 1}}.
 
 build_cipher_block(BlockSz, Mac, Fragment) ->
@@ -122,15 +136,19 @@ block_cipher(Fun, BlockSz, #cipher_state{key=Key, iv=IV} = CS0,
     L = build_cipher_block(BlockSz, Mac, Fragment),
     T = Fun(Key, IV, L),
     NextIV = next_iv(T, IV),
+%%    io:format("block_cipher < TLS 1.1:~nKey:~n~s~nIV:~n~s~nFragment:~n~s~nText:~n~s~n", [ssl_handshake:hexdump(Key),ssl_handshake:hexdump(IV),ssl_handshake:hexdump(Fragment),ssl_handshake:hexdump(T)]),
     {T, CS0#cipher_state{iv=NextIV}};
 
 block_cipher(Fun, BlockSz, #cipher_state{key=Key, iv=IV} = CS0,
-	     Mac, Fragment, {3, N})
-  when N == 2; N == 3 ->
+	     Mac, Fragment, {Major, Minor})
+  when (Major == 3 andalso Minor >= 2) orelse
+       Major == 254 ->
     NextIV = random_iv(IV),
     L0 = build_cipher_block(BlockSz, Mac, Fragment),
     L = [NextIV|L0],
     T = Fun(Key, IV, L),
+    io:format("block_cipher TLS 1.2:~nKey:~n~s~nIV:~n~s~nFragment:~n~s~nText:~n~s~nNextIV:~n~s~nMAC:~n~s~n",
+	      [ssl_handshake:hexdump(Key),ssl_handshake:hexdump(IV),ssl_handshake:hexdump(Fragment),ssl_handshake:hexdump(T),ssl_handshake:hexdump(NextIV),ssl_handshake:hexdump(Mac)]),
     {T, CS0#cipher_state{iv=NextIV}}.
 
 %%--------------------------------------------------------------------
@@ -171,6 +189,7 @@ decipher(?'3DES', HashSz, CipherState, Fragment, Version) ->
 			   crypto:des3_cbc_decrypt(K1, K2, K3, IV, T)
 		   end, CipherState, HashSz, Fragment, Version);
 decipher(?AES_CBC, HashSz, CipherState, Fragment, Version) ->
+%%    io:format("decipher AES CBC:~nHashSz: ~w~nCipherState: ~p~nFragment:~w~nVersion:~w~n", [HashSz, CipherState, Fragment, Version]),
     block_decipher(fun(Key, IV, T) when byte_size(Key) =:= 16 ->
 			   crypto:aes_cbc_128_decrypt(Key, IV, T);
 		      (Key, IV, T) when byte_size(Key) =:= 32 ->
@@ -178,12 +197,21 @@ decipher(?AES_CBC, HashSz, CipherState, Fragment, Version) ->
 		   end, CipherState, HashSz, Fragment, Version).
 
 decipher_aead(?AES_GCM, #cipher_state{iv = IV0, state = Ctx} = CipherState0, AAD, Fragment, _Version) ->
+    io:format("block_decipher:~n"),
+    io:format("CipherState: ~w~n", [CipherState0]),
+    io:format("IV:~n~s~p~n~n", [ssl_handshake:hexdump(IV0), IV0]),
+    io:format("Fragment:~n~s~n", [ssl_handshake:hexdump(Fragment)]),
+    io:format("AAD:~n~s~p~n~n", [ssl_handshake:hexdump(AAD), AAD]),
     try
 	CipherLen = size(Fragment) - 24,
 	<<Nonce:8/bytes, CipherText:CipherLen/bytes, Tag:16/bytes>> = Fragment,
 	<<Salt:4/bytes, _/binary>> = IV0,
 	IV1 = <<Salt/binary, Nonce/binary>>,
+	io:format("IV:~n~s~n~p~n", [ssl_handshake:hexdump(IV1), IV1]),
+	io:format("CipherText:~n~s~n~p~n", [ssl_handshake:hexdump(CipherText), CipherText]),
+	io:format("Tag:~n~s~n~p~n", [ssl_handshake:hexdump(Tag), Tag]),
 	Content = crypto:aes_gcm128_decrypt(Ctx, IV1, AAD, CipherText, Tag),
+	io:format("Content:~n~s~n~p~n", [ssl_handshake:hexdump(Content), Content]),
 	{Content, CipherState0}
     catch
 	_:_ ->
@@ -197,12 +225,17 @@ decipher_aead(?AES_GCM, #cipher_state{iv = IV0, state = Ctx} = CipherState0, AAD
 
 block_decipher(Fun, #cipher_state{key=Key, iv=IV} = CipherState0, 
 	       HashSz, Fragment, Version) ->
-    try 
+    try
+%%	io:format("block_decipher:~nKey:~n~s~nIV:~n~s~nFragment:~n~s~n", [ssl_handshake:hexdump(Key),ssl_handshake:hexdump(IV),ssl_handshake:hexdump(Fragment)]),
 	Text = Fun(Key, IV, Fragment),
+%%	io:format("Text:~n~s~n", [ssl_handshake:hexdump(Text)]),
 	NextIV = next_iv(Fragment, IV),
+%%	io:format("NextIV:~n~s~n", [ssl_handshake:hexdump(NextIV)]),
 	GBC = generic_block_cipher_from_bin(Version, Text, NextIV, HashSz),
 	Content = GBC#generic_block_cipher.content,
+%%	io:format("Content:~n~s~n", [ssl_handshake:hexdump(Content)]),
 	Mac = GBC#generic_block_cipher.mac,
+%%	io:format("MAC:~n~s~n", [ssl_handshake:hexdump(Mac)]),
 	CipherState1 = CipherState0#cipher_state{iv=GBC#generic_block_cipher.next_iv},
 	case is_correct_padding(GBC, Version) of
 	    true ->
@@ -216,7 +249,8 @@ block_decipher(Fun, #cipher_state{key=Key, iv=IV} = CipherState0,
 		{<<16#F0, Content/binary>>, Mac, CipherState1}
 	end
     catch
-	_:_ ->
+	Class:Error ->
+	    io:format("block_decipher: ~p:~p~n", [Class, Error]),
 	    %% This is a DECRYPTION_FAILED but
 	    %% "differentiating between bad_record_mac and decryption_failed
 	    %% alerts may permit certain attacks against CBC mode as used in
@@ -232,7 +266,9 @@ block_decipher(Fun, #cipher_state{key=Key, iv=IV} = CipherState0,
 suites({3, 0}) ->
     ssl_ssl3:suites();
 suites({3, N}) ->
-    ssl_tls1:suites(N).
+    ssl_tls1:suites(N);
+suites({254, N}) ->
+    ssl_tls1:dtls_suites(N).
 
 %%--------------------------------------------------------------------
 -spec anonymous_suites(tls_version()) -> [cipher_suite()].
@@ -242,6 +278,9 @@ suites({3, N}) ->
 %%--------------------------------------------------------------------
 anonymous_suites({3, N}) ->
     anonymous_suites(N);
+
+anonymous_suites({254, N}) ->
+    dtls_anonymous_suites(N);
 
 anonymous_suites(N)
   when N >= 3 ->
@@ -263,6 +302,24 @@ anonymous_suites(_) ->
      ?TLS_ECDH_anon_WITH_AES_128_CBC_SHA,
      ?TLS_ECDH_anon_WITH_AES_256_CBC_SHA].
 
+dtls_anonymous_suites(253) ->
+    [
+     %% ?TLS_DH_anon_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_DH_anon_WITH_AES_256_GCM_SHA384
+    ] ++ dtls_anonymous_suites(255);
+
+dtls_anonymous_suites(_) ->
+    [?TLS_DH_anon_WITH_DES_CBC_SHA,
+     ?TLS_DH_anon_WITH_3DES_EDE_CBC_SHA,
+     ?TLS_DH_anon_WITH_AES_128_CBC_SHA,
+     ?TLS_DH_anon_WITH_AES_256_CBC_SHA,
+     ?TLS_DH_anon_WITH_AES_128_CBC_SHA256,
+     ?TLS_DH_anon_WITH_AES_256_CBC_SHA256,
+     ?TLS_ECDH_anon_WITH_3DES_EDE_CBC_SHA,
+     ?TLS_ECDH_anon_WITH_AES_128_CBC_SHA,
+     ?TLS_ECDH_anon_WITH_AES_256_CBC_SHA].
+
+
 %%--------------------------------------------------------------------
 -spec psk_suites(tls_version()) -> [cipher_suite()].
 %%
@@ -271,6 +328,8 @@ anonymous_suites(_) ->
 %%--------------------------------------------------------------------
 psk_suites({3, N}) ->
     psk_suites(N);
+psk_suites({254, N}) ->
+    dtls_psk_suites(N);
 
 psk_suites(N)
   when N >= 3 ->
@@ -302,6 +361,33 @@ psk_suites(_) ->
 	 ?TLS_DHE_PSK_WITH_RC4_128_SHA,
 	 ?TLS_RSA_PSK_WITH_RC4_128_SHA,
 	 ?TLS_PSK_WITH_RC4_128_SHA].
+
+dtls_psk_suites(253) ->
+    [
+     %% ?TLS_DHE_PSK_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_RSA_PSK_WITH_AES_256_GCM_SHA384,
+     %% ?TLS_PSK_WITH_AES_256_GCM_SHA384,
+     ?TLS_DHE_PSK_WITH_AES_256_CBC_SHA384,
+     ?TLS_RSA_PSK_WITH_AES_256_CBC_SHA384,
+     ?TLS_PSK_WITH_AES_256_CBC_SHA384,
+     %% ?TLS_DHE_PSK_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_RSA_PSK_WITH_AES_128_GCM_SHA256,
+     %% ?TLS_PSK_WITH_AES_128_GCM_SHA256,
+     ?TLS_DHE_PSK_WITH_AES_128_CBC_SHA256,
+     ?TLS_RSA_PSK_WITH_AES_128_CBC_SHA256,
+     ?TLS_PSK_WITH_AES_128_CBC_SHA256
+    ] ++ dtls_psk_suites(255);
+
+dtls_psk_suites(_) ->
+	[?TLS_DHE_PSK_WITH_AES_256_CBC_SHA,
+	 ?TLS_RSA_PSK_WITH_AES_256_CBC_SHA,
+	 ?TLS_PSK_WITH_AES_256_CBC_SHA,
+	 ?TLS_DHE_PSK_WITH_AES_128_CBC_SHA,
+	 ?TLS_RSA_PSK_WITH_AES_128_CBC_SHA,
+	 ?TLS_PSK_WITH_AES_128_CBC_SHA,
+	 ?TLS_DHE_PSK_WITH_3DES_EDE_CBC_SHA,
+	 ?TLS_RSA_PSK_WITH_3DES_EDE_CBC_SHA,
+	 ?TLS_PSK_WITH_3DES_EDE_CBC_SHA].
 
 %%--------------------------------------------------------------------
 -spec srp_suites() -> [cipher_suite()].
@@ -1220,11 +1306,14 @@ openssl_suite_name(Cipher) ->
 filter(undefined, Ciphers) -> 
     Ciphers;
 filter(DerCert, Ciphers) ->
+    io:format("Cipher: ~p~n", [Ciphers]),
     OtpCert = public_key:pkix_decode_cert(DerCert, otp),
     SigAlg = OtpCert#'OTPCertificate'.signatureAlgorithm,
+    io:format("Signatur: ~p~n~n", [public_key:pkix_sign_types(SigAlg#'SignatureAlgorithm'.algorithm)]),
     PubKeyInfo = OtpCert#'OTPCertificate'.tbsCertificate#'OTPTBSCertificate'.subjectPublicKeyInfo,
     PubKeyAlg = PubKeyInfo#'OTPSubjectPublicKeyInfo'.algorithm,
 
+    io:format("PubKeyAlgo: ~p~n", [ssl_certificate:public_key_type(PubKeyAlg#'PublicKeyAlgorithm'.algorithm)]),
     Ciphers1 =
 	case ssl_certificate:public_key_type(PubKeyAlg#'PublicKeyAlgorithm'.algorithm) of
 	    rsa ->
@@ -1401,6 +1490,10 @@ block_size(Cipher) when Cipher == aes_128_cbc;
 			Cipher == aes_256_cbc ->
     16.
 
+prf_algorithm(default_prf, {254, 255}) ->
+    ?MD5SHA;
+prf_algorithm(default_prf, {254, _}) ->
+    ?SHA256;
 prf_algorithm(default_prf, {3, N}) when N >= 3 ->
     ?SHA256;
 prf_algorithm(default_prf, {3, _}) ->
@@ -1482,8 +1575,10 @@ generic_block_cipher_from_bin({3, N}, T, IV, HashSize)
 			  padding=Padding, padding_length=PadLength0,
 			  next_iv = IV};
 
-generic_block_cipher_from_bin({3, N}, T, IV, HashSize)
-  when N == 2; N == 3 ->
+generic_block_cipher_from_bin({Major, Minor}, T, IV, HashSize)
+  when (Major == 3 andalso Minor >= 2) orelse
+       Major == 254 ->
+%%    io:format("T:~n~s~nIV: ~w~nHashSize: ~w~n", [ssl_handshake:hexdump(T), IV, HashSize]),
     Sz1 = byte_size(T) - 1,
     <<_:Sz1/binary, ?BYTE(PadLength)>> = T,
     IVLength = byte_size(IV),
@@ -1654,6 +1749,10 @@ ecdhe_ecdsa_suites() ->
      ?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384].
 
 filter_keyuse(OtpCert, Ciphers, Suites, SignSuites) ->
+    io:format("filter_keyuse:~n"),
+    io:format("Ciphers: ~p~n", [[suite_definition(S) || S <- Ciphers]]),
+    io:format("Suites: ~p~n", [[suite_definition(S) || S <- Suites]]),
+    io:format("SignSuites: ~p~n", [[suite_definition(S) || S <- SignSuites]]),
     TBSCert = OtpCert#'OTPCertificate'.tbsCertificate, 
     TBSExtensions = TBSCert#'OTPTBSCertificate'.extensions,
     Extensions = ssl_certificate:extensions_list(TBSExtensions),

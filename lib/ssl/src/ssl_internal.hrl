@@ -24,6 +24,12 @@
 
 -include_lib("public_key/include/public_key.hrl"). 
 
+%-define(DEBUG, ct:pal).
+-define(DEBUG, io:format).
+-define(RED,   "\e[01;31m").
+-define(BLUE,  "\e[01;34m").
+-define(WHITE, "\e[0;37m").
+
 %% Looks like it does for backwards compatibility reasons
 -record(sslsocket, {fd = nil, pid = nil}).
 
@@ -34,7 +40,7 @@
 -type host()		  :: inet:ip_address() | inet:hostname().
 -type session_id()        :: 0 | binary().
 -type tls_version()       :: {integer(), integer()}.
--type tls_atom_version()  :: sslv3 | tlsv1 | 'tlsv1.1' | 'tlsv1.2'.
+-type tls_atom_version()  :: sslv3 | tlsv1 | 'tlsv1.1' | 'tlsv1.2' | dtlsv1 | 'dtlsv1.2'.
 -type certdb_ref()        :: reference().
 -type db_handle()         :: term().
 -type key_algo()          :: null | rsa | dhe_rsa | dhe_dss | dh_anon.
@@ -50,6 +56,7 @@
 -define(UINT16(X),   X:16/unsigned-big-integer).
 -define(UINT24(X),   X:24/unsigned-big-integer).
 -define(UINT32(X),   X:32/unsigned-big-integer).
+-define(UINT48(X),   X:48/unsigned-big-integer).
 -define(UINT64(X),   X:64/unsigned-big-integer).
 -define(STRING(X),   ?UINT32((size(X))), (X)/binary).
 
@@ -69,15 +76,18 @@
 -define(TRUE, 0).
 -define(FALSE, 1).
 
--define(ALL_SUPPORTED_VERSIONS, ['tlsv1.2', 'tlsv1.1', tlsv1, sslv3]).
--define(MIN_SUPPORTED_VERSIONS, ['tlsv1.1', tlsv1, sslv3]).
+-define(ALL_STREAM_SUPPORTED_VERSIONS, ['tlsv1.2', 'tlsv1.1', tlsv1, sslv3]).
+-define(MIN_STREAM_SUPPORTED_VERSIONS, ['tlsv1.1', tlsv1, sslv3]).
+-define(ALL_DATAGRAM_SUPPORTED_VERSIONS, ['dtlsv1.2', dtlsv1]).
+-define(MIN_DATAGRAM_SUPPORTED_VERSIONS, [tlsv1]).
 
 -record(ssl_options, {
-	  versions,   % 'tlsv1.2' | 'tlsv1.1' | tlsv1 | sslv3
+	  versions,   % 'tlsv1.2' | 'tlsv1.1' | tlsv1 | sslv3 | 'dtlsv1.2', dtlsv1
 	  verify,     %   verify_none | verify_peer
 	  verify_fun, % fun(CertVerifyErrors) -> boolean()
 	  fail_if_no_peer_cert, % boolean()
 	  verify_client_once,  % boolean()
+	  verify_client_hello, % boolean()
 	  %% fun(Extensions, State, Verify, AccError) ->  {Extensions, State, AccError}
 	  validate_extensions_fun, 
 	  depth,      % integer()
