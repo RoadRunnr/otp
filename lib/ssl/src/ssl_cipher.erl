@@ -304,8 +304,8 @@ anonymous_suites(_) ->
 
 dtls_anonymous_suites(253) ->
     [
-     %% ?TLS_DH_anon_WITH_AES_128_GCM_SHA256,
-     %% ?TLS_DH_anon_WITH_AES_256_GCM_SHA384
+     ?TLS_DH_anon_WITH_AES_128_GCM_SHA256,
+     ?TLS_DH_anon_WITH_AES_256_GCM_SHA384
     ] ++ dtls_anonymous_suites(255);
 
 dtls_anonymous_suites(_) ->

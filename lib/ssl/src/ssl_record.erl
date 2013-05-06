@@ -885,11 +885,8 @@ cipher(Type, Version, Fragment, CS0) ->
 
 cipher(BCA, Type, Version, Fragment, CipherS0, CS0)
   when BCA == ?AES_GCM ->
-    Seq = CS0#connection_state.sequence_number,
-    CS1 = bump_seqno(CS0),
-    {MajVer, MinVer} = Version,
     Length = erlang:iolist_size(Fragment),
-    AAD = <<Seq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>,
+    {AAD, CS1} = aad_and_bump_seqno(CS0, Type, Version, Length),
     {Ciphered, CipherS1} = ssl_cipher:cipher_aead(BCA, CipherS0, AAD, Fragment, Version),
     CS2 = CS1#connection_state{cipher_state=CipherS1},
     {Ciphered, CS2};
@@ -901,23 +898,35 @@ cipher(BCA, Type, Version, Fragment, CipherS0, CS0) ->
     CS2 = CS1#connection_state{cipher_state=CipherS1},
     {Ciphered, CS2}.
 
+decipher(TLS=#ssl_tls{type=Type, version=Version={254, _},
+		      epoch = Epoch, sequence = SeqNo,
+		      fragment=Fragment}, CS0)
+  when CS0#connection_state.security_parameters#security_parameters.bulk_cipher_algorithm == ?AES_GCM ->
+    io:format("AES-GGM...................~n"),
+    SP = CS0#connection_state.security_parameters,
+    BCA = SP#security_parameters.bulk_cipher_algorithm,
+    CipherS0 = CS0#connection_state.cipher_state,
+    Length = size(Fragment) - 24,
+    AAD = aad_with_seqno(Type, Version, Epoch, SeqNo, Length),
+    case ssl_cipher:decipher_aead(BCA, CipherS0, AAD, Fragment, Version) of
+	{T, CipherS1} ->
+	    CS1 = CS0#connection_state{cipher_state = CipherS1},
+	    {TLS#ssl_tls{fragment = T}, CS1};
+	#alert{} = Alert ->
+	    Alert
+    end;
+
 decipher(TLS=#ssl_tls{type=Type, version=Version, fragment=Fragment}, CS0)
   when CS0#connection_state.security_parameters#security_parameters.bulk_cipher_algorithm == ?AES_GCM ->
     io:format("AES-GGM...................~n"),
     SP = CS0#connection_state.security_parameters,
     BCA = SP#security_parameters.bulk_cipher_algorithm,
     CipherS0 = CS0#connection_state.cipher_state,
-    Seq = CS0#connection_state.sequence_number,
-    io:format("SecurityParameters: ~p~n", [SP]),
-    io:format("ConnectionState: ~p~n", [CS0]),
-    io:format("SequencNumber: ~p~n", [Seq]),
-    {MajVer, MinVer} = Version,
     Length = size(Fragment) - 24,
-    AAD = <<Seq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>,
+    {AAD, CS1} = aad_and_bump_seqno(CS0, Type, Version, Length),
     case ssl_cipher:decipher_aead(BCA, CipherS0, AAD, Fragment, Version) of
 	{T, CipherS1} ->
-	    CS1 = CS0#connection_state{cipher_state = CipherS1},
-	    CS2 = bump_seqno(CS1),
+	    CS2 = CS1#connection_state{cipher_state = CipherS1},
 	    {TLS#ssl_tls{fragment = T}, CS2};
 	#alert{} = Alert ->
 	    Alert
@@ -1014,6 +1023,23 @@ hash_and_bump_seqno(#connection_state{epoch = Epoch,
 		    MacSecret, SeqNo, Type,
 		    Length, Fragment),
     {Hash, bump_seqno(CS0)}.
+
+aad_with_seqno(Type, {MajVer, MinVer}, Epoch, SeqNo, Length) ->
+    Seq = (Epoch bsl 48) + SeqNo,
+    <<Seq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>.
+
+aad_and_bump_seqno(#connection_state{epoch = Epoch,
+				     sequence_number = SeqNo} = CS0,
+		   Type, {MajVer = 254, MinVer}, Length) ->
+    Seq = (Epoch bsl 48) + SeqNo,
+    AAD = <<Seq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>,
+    {AAD, bump_seqno(CS0)};
+
+aad_and_bump_seqno(#connection_state{sequence_number = Seq} = CS0,
+		   Type, {MajVer, MinVer}, Length) ->
+    AAD = <<Seq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>,
+    {AAD, bump_seqno(CS0)}.
+
 
 bump_seqno(#connection_state{sequence_number = SeqNo} = CS0) ->
     CS0#connection_state{sequence_number = SeqNo+1}.
