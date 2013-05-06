@@ -901,7 +901,7 @@ connection(#hello_request{}, #state{host = Host, port = Port,
     Hello = ssl_handshake:client_hello(Host, Port, Cookie, ConnectionStates0, SslOpts,
 				       Cache, CacheCb, Renegotiation, Cert),
 
-    State1 = start_flight(0, State0#state{session = Session0#session{session_id = Hello#client_hello.session_id}}),
+    State1 = State0#state{session = Session0#session{session_id = Hello#client_hello.session_id}},
     State2 = send_flight(Hello, waiting, State1),
 
     {Record, State} = next_record(State2),
@@ -913,7 +913,7 @@ connection(#client_hello{} = Hello, #state{role = server, allow_renegotiate = tr
     %% initiated renegotiation we will disallow many client initiated
     %% renegotiations immediately after each other.
     erlang:send_after(?WAIT_TO_ALLOW_RENEGOTIATION, self(), allow_renegotiate),
-    State = start_flight(0, State0),
+    State = start_flight(1, State0),
     hello(Hello, State#state{allow_renegotiate = false});
 
 connection(#client_hello{}, #state{role = server, allow_renegotiate = false,
@@ -2533,20 +2533,6 @@ next_state(Current, Next, #ssl_tls{type = ?HANDSHAKE, version = RecVersion,
    		%% This message should not be included in handshake
    		%% message hashes. Starts new handshake (renegotiation)
 		Hs0 = ssl_handshake:init_handshake_history(),
-
-		%%
-		%% OpenSSL Bug: RFC 6347, Sect. 4.2.2 says:
-		%%
-		%%   The first message each side transmits in each handshake always has
-		%%   message_seq = 0.  Whenever each new message is generated, the
-		%%   message_seq value is incremented by one.  Note that in the case of a
-		%%   rehandshake, this implies that the HelloRequest will have message_seq
-		%%   = 0 and the ServerHello will have message_seq = 1
-		%%
-		%% OpenSSL instead send the ServerHello with message_seq = 0
-		%%
-		%% the 'undefined' let's is accept whatever idea the other side
-		%% of the correct message_seq has:
 		State1 = start_flight(1, State#state{tls_handshake_history=Hs0,
 						     renegotiation = {true, peer}}),
 		?MODULE:SName(Packet, State1);
@@ -3204,18 +3190,6 @@ renegotiate(#state{role = server} = State0) ->
     HelloRequest = ssl_handshake:hello_request(),
     State1 = start_flight(0, State0),
     State2 = send_flight(HelloRequest, waiting, State1),
-
-    %%
-    %% OpenSSL Bug: RFC 6347, Sect. 4.2.2 says:
-    %%
-    %%   The first message each side transmits in each handshake always has
-    %%   message_seq = 0.  Whenever each new message is generated, the
-    %%   message_seq value is incremented by one.  Note that in the case of a
-    %%   rehandshake, this implies that the HelloRequest will have message_seq
-    %%   = 0 and the ServerHello will have message_seq = 1
-    %%
-    %% OpenSSL instead expects the ServerHello with message_seq = 0
-    %%
     {Record, State} = next_record(State2#state{tls_handshake_history = Hs0}),
     next_state(connection, hello, Record, State#state{allow_renegotiate = true}).
 
@@ -3537,7 +3511,7 @@ init_message_sequences() ->
 init_message_sequences(server, #ssl_options{verify_client_hello = true}) ->
     #message_sequences{read = 0, write = 1};
 init_message_sequences(_, _) ->
-    #message_sequences{read = 0, write = 0}.
+    #message_sequences{read = 0, write = 1}.
 
 negotiated_version(Version, undefined) ->
     Version;
