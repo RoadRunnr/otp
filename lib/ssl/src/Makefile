@@ -62,7 +62,9 @@ MODULES= \
 	ssl_ssl2 \
 	ssl_ssl3 \
 	ssl_tls1 \
-	ssl_tls_dist_proxy
+	ssl_tls_dist_proxy \
+	ssl_datagram \
+	ssl_udp
 
 INTERNAL_HRL_FILES = \
 	 ssl_alert.hrl ssl_cipher.hrl ssl_handshake.hrl ssl_internal.hrl \

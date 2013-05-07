@@ -34,7 +34,7 @@
 
 -export([security_parameters/3, suite_definition/1,
 	 decipher/5, cipher/5,
-	 suite/1, suites/1, anonymous_suites/0, psk_suites/1, srp_suites/0,
+	 suite/1, suites/1, anonymous_suites/1, psk_suites/1, srp_suites/0,
 	 openssl_suite/1, openssl_suite_name/1, filter/2, filter_suites/1,
 	 hash_algorithm/1, sign_algorithm/1]).
 
@@ -108,8 +108,9 @@ block_cipher(Fun, BlockSz, #cipher_state{key=Key, iv=IV} = CS0,
     {T, CS0#cipher_state{iv=NextIV}};
 
 block_cipher(Fun, BlockSz, #cipher_state{key=Key, iv=IV} = CS0,
-	     Mac, Fragment, {3, N})
-  when N == 2; N == 3 ->
+	     Mac, Fragment, {Major, Minor})
+  when (Major == 3 andalso Minor >= 2) orelse
+       Major == 254 ->
     NextIV = random_iv(IV),
     L0 = build_cipher_block(BlockSz, Mac, Fragment),
     L = [NextIV|L0],
@@ -197,15 +198,23 @@ block_decipher(Fun, #cipher_state{key=Key, iv=IV} = CipherState0,
 suites({3, 0}) ->
     ssl_ssl3:suites();
 suites({3, N}) ->
-    ssl_tls1:suites(N).
+    ssl_tls1:suites(N);
+suites({254, N}) ->
+    ssl_tls1:dtls_suites(N).
 
 %%--------------------------------------------------------------------
--spec anonymous_suites() -> [cipher_suite()].
+-spec anonymous_suites(tls_version()) -> [cipher_suite()].
 %%
 %% Description: Returns a list of the anonymous cipher suites, only supported
 %% if explicitly set by user. Intended only for testing.
 %%--------------------------------------------------------------------
-anonymous_suites() ->
+anonymous_suites({3, N}) ->
+    anonymous_suites(N);
+
+anonymous_suites({254, N}) ->
+    dtls_anonymous_suites(N);
+
+anonymous_suites(_) ->
     [?TLS_DH_anon_WITH_RC4_128_MD5,
      ?TLS_DH_anon_WITH_DES_CBC_SHA,
      ?TLS_DH_anon_WITH_3DES_EDE_CBC_SHA,
@@ -218,6 +227,18 @@ anonymous_suites() ->
      ?TLS_ECDH_anon_WITH_AES_128_CBC_SHA,
      ?TLS_ECDH_anon_WITH_AES_256_CBC_SHA].
 
+dtls_anonymous_suites(_) ->
+    [?TLS_DH_anon_WITH_DES_CBC_SHA,
+     ?TLS_DH_anon_WITH_3DES_EDE_CBC_SHA,
+     ?TLS_DH_anon_WITH_AES_128_CBC_SHA,
+     ?TLS_DH_anon_WITH_AES_256_CBC_SHA,
+     ?TLS_DH_anon_WITH_AES_128_CBC_SHA256,
+     ?TLS_DH_anon_WITH_AES_256_CBC_SHA256,
+     ?TLS_ECDH_anon_WITH_3DES_EDE_CBC_SHA,
+     ?TLS_ECDH_anon_WITH_AES_128_CBC_SHA,
+     ?TLS_ECDH_anon_WITH_AES_256_CBC_SHA].
+
+
 %%--------------------------------------------------------------------
 -spec psk_suites(tls_version() | integer()) -> [cipher_suite()].
 %%
@@ -226,6 +247,8 @@ anonymous_suites() ->
 %%--------------------------------------------------------------------
 psk_suites({3, N}) ->
     psk_suites(N);
+psk_suites({254, N}) ->
+    dtls_psk_suites(N);
 
 psk_suites(N)
   when N >= 3 ->
@@ -250,6 +273,27 @@ psk_suites(_) ->
 	 ?TLS_DHE_PSK_WITH_RC4_128_SHA,
 	 ?TLS_RSA_PSK_WITH_RC4_128_SHA,
 	 ?TLS_PSK_WITH_RC4_128_SHA].
+
+dtls_psk_suites(253) ->
+    [
+     ?TLS_DHE_PSK_WITH_AES_256_CBC_SHA384,
+     ?TLS_RSA_PSK_WITH_AES_256_CBC_SHA384,
+     ?TLS_PSK_WITH_AES_256_CBC_SHA384,
+     ?TLS_DHE_PSK_WITH_AES_128_CBC_SHA256,
+     ?TLS_RSA_PSK_WITH_AES_128_CBC_SHA256,
+     ?TLS_PSK_WITH_AES_128_CBC_SHA256
+    ] ++ dtls_psk_suites(255);
+
+dtls_psk_suites(_) ->
+	[?TLS_DHE_PSK_WITH_AES_256_CBC_SHA,
+	 ?TLS_RSA_PSK_WITH_AES_256_CBC_SHA,
+	 ?TLS_PSK_WITH_AES_256_CBC_SHA,
+	 ?TLS_DHE_PSK_WITH_AES_128_CBC_SHA,
+	 ?TLS_RSA_PSK_WITH_AES_128_CBC_SHA,
+	 ?TLS_PSK_WITH_AES_128_CBC_SHA,
+	 ?TLS_DHE_PSK_WITH_3DES_EDE_CBC_SHA,
+	 ?TLS_RSA_PSK_WITH_3DES_EDE_CBC_SHA,
+	 ?TLS_PSK_WITH_3DES_EDE_CBC_SHA].
 
 %%--------------------------------------------------------------------
 -spec srp_suites() -> [cipher_suite()].
@@ -1150,6 +1194,10 @@ block_size(Cipher) when Cipher == aes_128_cbc;
 			Cipher == aes_256_cbc ->
     16.
 
+prf_algorithm(default_prf, {254, 255}) ->
+    ?MD5SHA;
+prf_algorithm(default_prf, {254, _}) ->
+    ?SHA256;
 prf_algorithm(default_prf, {3, N}) when N >= 3 ->
     ?SHA256;
 prf_algorithm(default_prf, {3, _}) ->
@@ -1231,8 +1279,9 @@ generic_block_cipher_from_bin({3, N}, T, IV, HashSize)
 			  padding=Padding, padding_length=PadLength0,
 			  next_iv = IV};
 
-generic_block_cipher_from_bin({3, N}, T, IV, HashSize)
-  when N == 2; N == 3 ->
+generic_block_cipher_from_bin({Major, Minor}, T, IV, HashSize)
+  when (Major == 3 andalso Minor >= 2) orelse
+       Major == 254 ->
     Sz1 = byte_size(T) - 1,
     <<_:Sz1/binary, ?BYTE(PadLength)>> = T,
     IVLength = byte_size(IV),

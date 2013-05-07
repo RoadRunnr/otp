@@ -29,7 +29,7 @@
 -include("ssl_record.hrl").
 
 -export([master_secret/4, finished/5, certificate_verify/3, mac_hash/7,
-	 setup_keys/8, suites/1, prf/5,
+	 setup_keys/8, suites/1, dtls_suites/1, prf/5,
 	 ecc_curves/1, oid_to_enum/1, enum_to_oid/1]).
 
 %%====================================================================
@@ -238,9 +238,61 @@ suites(Minor) when Minor == 3 ->
      ?TLS_DHE_RSA_WITH_AES_128_CBC_SHA256,
      ?TLS_DHE_DSS_WITH_AES_128_CBC_SHA256,
      ?TLS_RSA_WITH_AES_128_CBC_SHA256
-     %% ?TLS_DH_anon_WITH_AES_128_CBC_SHA256,
-     %% ?TLS_DH_anon_WITH_AES_256_CBC_SHA256
 	] ++ suites(2).
+
+-spec dtls_suites(253|255) -> [cipher_suite()].
+
+dtls_suites(255) ->
+    [
+      ?TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+      ?TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+      ?TLS_DHE_RSA_WITH_AES_256_CBC_SHA,
+      ?TLS_DHE_DSS_WITH_AES_256_CBC_SHA,
+      ?TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA,
+      ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA,
+      ?TLS_RSA_WITH_AES_256_CBC_SHA,
+
+      ?TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_DHE_DSS_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_ECDH_ECDSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_ECDH_RSA_WITH_3DES_EDE_CBC_SHA,
+      ?TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+
+      ?TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+      ?TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+      ?TLS_DHE_RSA_WITH_AES_128_CBC_SHA,
+      ?TLS_DHE_DSS_WITH_AES_128_CBC_SHA,
+      ?TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA,
+      ?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA,
+      ?TLS_RSA_WITH_AES_128_CBC_SHA,
+      %%?TLS_RSA_WITH_IDEA_CBC_SHA,
+      ?TLS_DHE_RSA_WITH_DES_CBC_SHA,
+      ?TLS_RSA_WITH_DES_CBC_SHA
+     ];
+
+dtls_suites(_) ->
+    [
+     ?TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA384,
+     ?TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384,
+
+     ?TLS_DHE_RSA_WITH_AES_256_CBC_SHA256,
+     ?TLS_DHE_DSS_WITH_AES_256_CBC_SHA256,
+     ?TLS_RSA_WITH_AES_256_CBC_SHA256,
+
+     ?TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+     ?TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+     ?TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256,
+     ?TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256,
+
+     ?TLS_DHE_RSA_WITH_AES_128_CBC_SHA256,
+     ?TLS_DHE_DSS_WITH_AES_128_CBC_SHA256,
+     ?TLS_RSA_WITH_AES_128_CBC_SHA256
+     %% ?TLS_DH_anon_WITH_AES_128_CBC_SHA256,
+    ] ++ dtls_suites(255).
 
 %%--------------------------------------------------------------------
 %%% Internal functions
