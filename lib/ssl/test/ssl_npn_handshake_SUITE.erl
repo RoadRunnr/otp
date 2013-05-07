@@ -89,8 +89,7 @@ init_per_group(GroupName, Config) ->
 	true ->
 	    case ssl_test_lib:sufficient_crypto_support(GroupName) of
 		true ->
-		    ssl_test_lib:init_tls_version(GroupName),
-		    Config;
+		    ssl_test_lib:init_tls_version(GroupName, Config);
 		false ->
 		    {skip, "Missing crypto support"}
 	    end;
@@ -186,10 +185,10 @@ client_negotiate_server_does_not_support(Config) when is_list(Config) ->
 renegotiate_from_client_after_npn_handshake(Config) when is_list(Config) ->
     Data = "hello world",
     
-    ClientOpts0 = ?config(client_opts, Config),
+    ClientOpts0 = ssl_test_lib:ssl_options(client_opts, Config),
     ClientOpts = [{client_preferred_next_protocols,
 		   {client, [<<"http/1.0">>], <<"http/1.1">>}}] ++ ClientOpts0,
-    ServerOpts0 = ?config(server_opts, Config),
+    ServerOpts0 = ssl_test_lib:ssl_options(server_opts, Config),
     ServerOpts = [{next_protocols_advertised,
 		   [<<"spdy/2">>, <<"http/1.1">>, <<"http/1.0">>]}] ++  ServerOpts0,
     ExpectedProtocol = {ok, <<"http/1.0">>},
@@ -211,7 +210,7 @@ renegotiate_from_client_after_npn_handshake(Config) when is_list(Config) ->
 
 %--------------------------------------------------------------------------------
 npn_not_supported_client(Config) when is_list(Config) ->
-    ClientOpts0 = ?config(client_opts, Config),
+    ClientOpts0 = ssl_test_lib:ssl_options(client_opts, Config),
     PrefProtocols = {client_preferred_next_protocols,
 		     {client, [<<"http/1.0">>], <<"http/1.1">>}},
     ClientOpts = [PrefProtocols] ++ ClientOpts0,
@@ -226,7 +225,7 @@ npn_not_supported_client(Config) when is_list(Config) ->
 
 %--------------------------------------------------------------------------------
 npn_not_supported_server(Config) when is_list(Config)->
-    ServerOpts0 = ?config(server_opts, Config),
+    ServerOpts0 = ssl_test_lib:ssl_options(server_opts, Config),
     AdvProtocols = {next_protocols_advertised, [<<"spdy/2">>, <<"http/1.1">>, <<"http/1.0">>]},
     ServerOpts = [AdvProtocols] ++  ServerOpts0,
   
@@ -234,10 +233,10 @@ npn_not_supported_server(Config) when is_list(Config)->
 
 %--------------------------------------------------------------------------------
 npn_handshake_session_reused(Config) when  is_list(Config)->
-    ClientOpts0 = ?config(client_opts, Config),
+    ClientOpts0 = ssl_test_lib:ssl_options(client_opts, Config),
     ClientOpts = [{client_preferred_next_protocols,
 		   {client, [<<"http/1.0">>], <<"http/1.1">>}}] ++ ClientOpts0,
-    ServerOpts0 = ?config(server_opts, Config),
+    ServerOpts0 = ssl_test_lib:ssl_options(server_opts, Config),
     ServerOpts =[{next_protocols_advertised,
 		   [<<"spdy/2">>, <<"http/1.1">>, <<"http/1.0">>]}]  ++ ServerOpts0,
 
@@ -288,9 +287,9 @@ npn_handshake_session_reused(Config) when  is_list(Config)->
 run_npn_handshake(Config, ClientExtraOpts, ServerExtraOpts, ExpectedProtocol) ->
     Data = "hello world",
 
-    ClientOpts0 = ?config(client_opts, Config),
+    ClientOpts0 = ssl_test_lib:ssl_options(client_opts, Config),
     ClientOpts = ClientExtraOpts ++ ClientOpts0,
-    ServerOpts0 = ?config(server_opts, Config),
+    ServerOpts0 = ssl_test_lib:ssl_options(server_opts, Config),
     ServerOpts = ServerExtraOpts ++  ServerOpts0,
 
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),

@@ -980,6 +980,10 @@ state([{data,[{"StateData", State}]} | _]) ->
 state([_ | Rest]) ->
     state(Rest).
 
+is_tls_version('dtlsv1.2') ->
+    true;
+is_tls_version('dtlsv1') ->
+    true;
 is_tls_version('tlsv1.2') ->
     true;
 is_tls_version('tlsv1.1') ->
@@ -991,13 +995,23 @@ is_tls_version('sslv3') ->
 is_tls_version(_) ->
     false.
 
-init_tls_version(Version) ->
+init_tls_version(Version, Config)
+  when Version == 'dtlsv1.2'; Version == 'dtlsv1' ->
+    ssl:stop(),
+    application:load(ssl),
+    application:set_env(ssl, dtls_protocol_version, Version),
+    ssl:start(),
+    [{protocol, dtls}, {protocol_opts, [{cb_info, ssl_udp}]}|Config];
+
+init_tls_version(Version, Config) ->
     ssl:stop(),
     application:load(ssl),
     application:set_env(ssl, protocol_version, Version),
-    ssl:start().
+    ssl:start(),
+    [{protocol, tls}|Config].
 
-sufficient_crypto_support('tlsv1.2') ->
+sufficient_crypto_support(Version)
+  when Version == 'tlsv1.2'; Version == 'dtlsv1.2' ->
     CryptoSupport = crypto:supports(),
     proplists:get_bool(sha256, proplists:get_value(hashs, CryptoSupport));
 sufficient_crypto_support(Group) when Group == ciphers_ec;     %% From ssl_basic_SUITE
@@ -1162,3 +1176,17 @@ close_loop(Port, Time, SentClose) ->
 		    ct:log("Timeout~n",[])
 	    end
     end.
+
+ssl_options(Option, Config) ->
+    ProtocolOpts = proplists:get_value(protocol_opts, Config, []),
+    Opts = ?config(Option, Config),
+    Opts ++ ProtocolOpts.
+
+protocol_version(Config) ->
+    case proplists:get_value(protocol, Config0) of
+	dtls ->
+	    dtls_record:protocol_version(dtls_record:highest_protocol_version([]));
+	_ ->
+	    tls_record:protocol_version(tls_record:highest_protocol_version([]))
+   end.
+
