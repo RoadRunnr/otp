@@ -674,8 +674,7 @@ certify_client_key_exchange(#encrypted_premaster_secret{premaster_secret= EncPMS
 
 certify_client_key_exchange(#client_diffie_hellman_public{dh_public = ClientPublicDhKey},
 			    #state{negotiated_version = Version,
-				   diffie_hellman_params = #'DHParameter'{prime = P,
-									  base = G} = Params,
+				   diffie_hellman_params = #'DHParameter'{} = Params,
 				   diffie_hellman_keys = {_, ServerDhPrivateKey}} = State0) ->
     case dh_master_secret(Params, ClientPublicDhKey, ServerDhPrivateKey, State0) of
 	#state{} = State1 ->
@@ -2216,7 +2215,7 @@ client_srp_master_secret(Generator, Prime, Salt, ServerPub, ClientKeys,
     case ssl_srp_primes:check_srp_params(Generator, Prime) of
 	ok ->
 	    {Username, Password} = SslOpts#ssl_options.srp_identity,
-	    DerivedKey = crypto:sha([Salt, crypto:sha([Username, <<$:>>, Password])]),
+	    DerivedKey = crypto:hash(sha, [Salt, crypto:hash(sha, [Username, <<$:>>, Password])]),
 	    case crypto:compute_key(srp, ServerPub, ClientKeys, {user, [DerivedKey, Prime, Generator, '6a']}) of
 		error ->
 		    ?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER);
