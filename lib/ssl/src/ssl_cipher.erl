@@ -275,6 +275,10 @@ srp_suites() ->
 %% Note: Currently not supported suites are commented away.
 %% They should be supported or removed in the future.
 %%-------------------------------------------------------------------
+%% Pseudo Suite
+suite_definition(?TLS_EMPTY_RENEGOTIATION_INFO_SCSV) ->
+    {null, null, null, null};
+
 %% TLS v1.1 suites
 suite_definition(?TLS_NULL_WITH_NULL_NULL) ->
     {null, null, null, null};
