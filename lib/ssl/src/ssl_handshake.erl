@@ -1368,8 +1368,8 @@ enc_hs(#client_hello{client_version = {Major, Minor},
     BinCipherSuites = list_to_binary(CipherSuites),
     CsLength = byte_size(BinCipherSuites),
     Extensions0 = hello_extensions(RenegotiationInfo, SRP, NextProtocolNegotiation)
-	++ hello_extensions(lists:map(fun ssl_cipher:suite_definition/1, CipherSuites), EcPointFormats)
-	++ hello_extensions(lists:map(fun ssl_cipher:suite_definition/1, CipherSuites), EllipticCurves),
+	++ ec_hello_extensions(lists:map(fun ssl_cipher:suite_definition/1, CipherSuites), EcPointFormats)
+	++ ec_hello_extensions(lists:map(fun ssl_cipher:suite_definition/1, CipherSuites), EllipticCurves),
     Extensions1 = if
 		      Major == 3, Minor >=3 -> Extensions0 ++ hello_extensions(HashSigns);
 		      true -> Extensions0
@@ -1393,8 +1393,8 @@ enc_hs(#server_hello{server_version = {Major, Minor},
     SID_length = byte_size(Session_ID),
     CipherSuites = [ssl_cipher:suite_definition(CipherSuite)],
     Extensions  = hello_extensions(RenegotiationInfo, NextProtocolNegotiation)
-	++ hello_extensions(CipherSuites, EcPointFormats)
-	++ hello_extensions(CipherSuites, EllipticCurves),
+	++ ec_hello_extensions(CipherSuites, EcPointFormats)
+	++ ec_hello_extensions(CipherSuites, EllipticCurves),
     ExtensionsBin = enc_hello_extensions(Extensions),
     {?SERVER_HELLO, <<?BYTE(Major), ?BYTE(Minor), Random:32/binary,
 		     ?BYTE(SID_length), Session_ID/binary,
@@ -1521,20 +1521,23 @@ enc_sign(_HashSign, Sign, _Version) ->
 	<<?UINT16(SignLen), Sign/binary>>.
 
 
-hello_extensions(CipherSuites, #elliptic_curves{} = Info) ->
+ec_hello_extensions(CipherSuites, #elliptic_curves{} = Info) ->
     case advertises_ec_ciphers(CipherSuites) of
 	true ->
 	    [Info];
 	false ->
 	    []
     end;
-hello_extensions(CipherSuites, #ec_point_formats{} = Info) ->
+ec_hello_extensions(CipherSuites, #ec_point_formats{} = Info) ->
     case advertises_ec_ciphers(CipherSuites) of
 	true ->
 	    [Info];
 	false ->
 	    []
     end;
+
+ec_hello_extensions(_, _) ->
+    [].
 
 hello_extensions(RenegotiationInfo, NextProtocolNegotiation) ->
     hello_extensions(RenegotiationInfo) ++ next_protocol_extension(NextProtocolNegotiation).
