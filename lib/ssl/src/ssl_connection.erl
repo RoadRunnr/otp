@@ -3058,8 +3058,14 @@ start_or_recv_cancel_timer(Timeout, RecvFrom) ->
 cancel_timer(undefined) ->
     ok;
 cancel_timer(Timer) ->
-    erlang:cancel_timer(Timer),
-    ok.
+    case erlang:cancel_timer(Timer) of
+        false ->
+            receive {timeout, Timer, _} -> 0
+            after 0 -> false
+            end;
+        RemainingTime ->
+            RemainingTime
+    end.
 
 handle_unrecv_data(StateName, #state{socket = Socket, transport_cb = Transport} = State) ->
     ssl_socket:setopts(Transport, Socket, [{active, false}]),
