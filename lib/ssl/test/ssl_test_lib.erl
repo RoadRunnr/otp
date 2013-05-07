@@ -915,6 +915,10 @@ state([{data,[{"StateData", State}]} | _]) ->
 state([_ | Rest]) ->
     state(Rest).
 
+is_tls_version('dtlsv1.2') ->
+    true;
+is_tls_version('dtlsv1') ->
+    true;
 is_tls_version('tlsv1.2') ->
     true;
 is_tls_version('tlsv1.1') ->
@@ -926,13 +930,23 @@ is_tls_version('sslv3') ->
 is_tls_version(_) ->
     false.
 
-init_tls_version(Version) ->
+init_tls_version(Version, Config)
+  when Version == 'dtlsv1.2'; Version == 'dtlsv1' ->
+    ssl:stop(),
+    application:load(ssl),
+    application:set_env(ssl, protocol_version_datagram, Version),
+    ssl:start(),
+    [{connection_type, datagram},{protocol_opts, [{cb_info, ssl_udp}]}|Config];
+
+init_tls_version(Version, Config) ->
     ssl:stop(),
     application:load(ssl),
     application:set_env(ssl, protocol_version, Version),
-    ssl:start().
+    ssl:start(),
+    [{connection_type, stream}|Config].
 
-sufficient_crypto_support('tlsv1.2') ->
+sufficient_crypto_support(Version)
+  when Version == 'tlsv1.2'; Version == 'dtlsv1.2' ->
     proplists:get_bool(sha256, crypto:algorithms());
 sufficient_crypto_support(ciphers_ec) ->
     proplists:get_bool(ec, crypto:algorithms());
@@ -1000,3 +1014,12 @@ cipher_restriction(Config0) ->
 	true ->
 	    Config0
     end.
+
+ssl_options(Option, Config) ->
+    ProtocolOpts = proplists:get_value(protocol_opts, Config, []),
+    Opts = ?config(Option, Config),
+    Opts ++ ProtocolOpts.
+
+protocol_version(Config) ->
+    ConnType = proplists:get_value(connection_type, Config, stream),
+    ssl_record:protocol_version(ssl_record:highest_connection_protocol_version(ConnType)).
