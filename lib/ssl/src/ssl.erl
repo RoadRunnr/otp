@@ -235,10 +235,10 @@ ssl_accept(ListenSocket) ->
 ssl_accept(#sslsocket{} = Socket, Timeout) ->
     ssl_connection:handshake(Socket, Timeout);
     
-ssl_accept(ListenSocket, SslOptions)  when ?IS_SOCKET(ListenSocket) ->
+ssl_accept(ListenSocket, SslOptions) ->
     ssl_accept(ListenSocket, SslOptions, infinity).
 
-ssl_accept(Socket, SslOptions, Timeout) when ?IS_SOCKET(Socket) ->
+ssl_accept(Socket, SslOptions, Timeout) ->
     {Transport,_,_,_} =
 	handle_option(cb_info, SslOptions, {gen_tcp, tcp, tcp_closed, tcp_error}),
 
