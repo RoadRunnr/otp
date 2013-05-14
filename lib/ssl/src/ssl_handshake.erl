@@ -188,6 +188,7 @@ certificate_request(CipherSuite, CertDbHandle, CertDbRef, Version) ->
 		   binary(), binary(), private_key()} |
 		   {ecdh, #'ECPrivateKey'{}} |
 		   {psk, binary()} |
+		   {ecdhe_psk, binary(), #'ECPrivateKey'{}} |
 		   {dhe_psk, binary(), binary()} |
 		   {srp, {binary(), binary()}, #srp_user{}, {HashAlgo::atom(), SignAlgo::atom()},
 		   binary(), binary(), private_key()}) ->
@@ -218,6 +219,13 @@ key_exchange(client, _Version, {psk, Identity}) ->
        exchange_keys = #client_psk_identity{
 			  identity = Identity}
       };
+
+key_exchange(client, _Version, {ecdhe_psk, Identity, #'ECPrivateKey'{publicKey = {0, ECPublicKey}}}) ->
+    #client_key_exchange{
+	      exchange_keys = #client_ecdhe_psk_identity{
+		identity = Identity,
+		dh_public = ECPublicKey}
+	       };
 
 key_exchange(client, _Version, {dhe_psk, Identity, PublicKey}) ->
     #client_key_exchange{
@@ -259,6 +267,16 @@ key_exchange(server, Version, {psk, PskIdentityHint,
 			       HashSign, ClientRandom, ServerRandom, PrivateKey}) ->
     ServerPSKParams = #server_psk_params{hint = PskIdentityHint},
     enc_server_key_exchange(Version, ServerPSKParams, HashSign,
+			    ClientRandom, ServerRandom, PrivateKey);
+
+key_exchange(server, Version, {ecdhe_psk, PskIdentityHint,
+			       #'ECPrivateKey'{publicKey =  {0, ECPublicKey},
+					       parameters = ECCurve},
+			       HashSign, ClientRandom, ServerRandom, PrivateKey}) ->
+    ServerECDHEPSKParams = #server_ecdhe_psk_params{
+      hint = PskIdentityHint,
+      dh_params = #server_ecdh_params{curve = ECCurve, public = ECPublicKey}},
+    enc_server_key_exchange(Version, ServerECDHEPSKParams, HashSign,
 			    ClientRandom, ServerRandom, PrivateKey);
 
 key_exchange(server, Version, {dhe_psk, PskIdentityHint, {PublicKey, _},
@@ -368,7 +386,6 @@ certify(#certificate{asn1_certificates = ASN1Certs}, CertDbHandle, CertDbRef,
 					SslState)
 		 end, {Role, UserState0}}
 	end,
-
     try
 	{TrustedErlCert, CertPath}  =
 	    ssl_certificate:trusted_cert_and_path(ASN1Certs, CertDbHandle, CertDbRef),
@@ -809,6 +826,21 @@ dec_server_key(<<?UINT16(Len), PskIdentityHint:Len/binary, _/binary>> = KeyStruc
     Params = #server_psk_params{
 		hint = PskIdentityHint},
     {BinMsg, HashSign, Signature} = dec_server_key_params(Len + 2, KeyStruct, Version),
+    #server_key_params{params = Params,
+		       params_bin = BinMsg,
+		       hashsign = HashSign,
+		       signature = Signature};
+dec_server_key(<<?UINT16(Len), IdentityHint:Len/binary,
+		 ?BYTE(?NAMED_CURVE), ?UINT16(CurveID),
+		 ?BYTE(PointLen), ECPoint:PointLen/binary,
+		 _/binary>> = KeyStruct,
+	       ?KEY_EXCHANGE_EC_DIFFIE_HELLMAN_PSK, Version) ->
+    Params = #server_ecdhe_psk_params{
+      hint = IdentityHint,
+      dh_params = #server_ecdh_params{
+	curve = {namedCurve, tls_v1:enum_to_oid(CurveID)},
+	public = ECPoint}},
+    {BinMsg, HashSign, Signature} = dec_server_key_params(Len + 2 + PointLen + 4, KeyStruct, Version),
     #server_key_params{params = Params,
 		       params_bin = BinMsg,
 		       hashsign = HashSign,
@@ -1301,6 +1333,18 @@ encode_server_key(#server_ecdh_params{curve = {namedCurve, ECCurve}, public = EC
 encode_server_key(#server_psk_params{hint = PskIdentityHint}) ->
     Len = byte_size(PskIdentityHint),
     <<?UINT16(Len), PskIdentityHint/binary>>;
+encode_server_key(Params = #server_ecdhe_psk_params{hint = undefined}) ->
+    encode_server_key(Params#server_ecdhe_psk_params{hint = <<>>});
+encode_server_key(#server_ecdhe_psk_params{
+		     hint = PskIdentityHint,
+		     dh_params = #server_ecdh_params{
+		       curve = {namedCurve, ECCurve}, public = ECPubKey}}) ->
+    %%TODO: support arbitrary keys
+    Len = byte_size(PskIdentityHint),
+    KLen = size(ECPubKey),
+    <<?UINT16(Len), PskIdentityHint/binary,
+      ?BYTE(?NAMED_CURVE), ?UINT16((tls_v1:oid_to_enum(ECCurve))),
+      ?BYTE(KLen), ECPubKey/binary>>;
 encode_server_key(Params = #server_dhe_psk_params{hint = undefined}) ->
     encode_server_key(Params#server_dhe_psk_params{hint = <<>>});
 encode_server_key(#server_dhe_psk_params{
@@ -1338,6 +1382,12 @@ encode_client_key(#client_psk_identity{identity = undefined}, _) ->
 encode_client_key(#client_psk_identity{identity = Id}, _) ->
     Len = byte_size(Id),
     <<?UINT16(Len), Id/binary>>;
+encode_client_key(Identity = #client_ecdhe_psk_identity{identity = undefined}, Version) ->
+    encode_client_key(Identity#client_ecdhe_psk_identity{identity = <<"psk_identity">>}, Version);
+encode_client_key(#client_ecdhe_psk_identity{identity = Id, dh_public = DHPublic}, _) ->
+    Len = byte_size(Id),
+    DHLen = byte_size(DHPublic),
+    <<?UINT16(Len), Id/binary, ?BYTE(DHLen), DHPublic/binary>>;
 encode_client_key(Identity = #client_dhe_psk_identity{identity = undefined}, Version) ->
     encode_client_key(Identity#client_dhe_psk_identity{identity = <<"psk_identity">>}, Version);
 encode_client_key(#client_dhe_psk_identity{identity = Id, dh_public = DHPublic}, _) ->
@@ -1391,6 +1441,10 @@ dec_client_key(<<?BYTE(DH_YLen), DH_Y:DH_YLen/binary>>,
 dec_client_key(<<?UINT16(Len), Id:Len/binary>>,
 	       ?KEY_EXCHANGE_PSK, _) ->
     #client_psk_identity{identity = Id};
+dec_client_key(<<?UINT16(Len), Id:Len/binary,
+		 ?BYTE(DH_YLen), DH_Y:DH_YLen/binary>>,
+	       ?KEY_EXCHANGE_EC_DIFFIE_HELLMAN_PSK, _) ->
+    #client_ecdhe_psk_identity{identity = Id, dh_public = DH_Y};
 dec_client_key(<<?UINT16(Len), Id:Len/binary,
 		 ?UINT16(DH_YLen), DH_Y:DH_YLen/binary>>,
 	       ?KEY_EXCHANGE_DHE_PSK, _) ->
@@ -1541,6 +1595,8 @@ key_exchange_alg(Alg) when Alg == ecdhe_rsa; Alg == ecdh_rsa;
     ?KEY_EXCHANGE_EC_DIFFIE_HELLMAN;
 key_exchange_alg(psk) ->
     ?KEY_EXCHANGE_PSK;
+key_exchange_alg(ecdhe_psk) ->
+    ?KEY_EXCHANGE_EC_DIFFIE_HELLMAN_PSK;
 key_exchange_alg(dhe_psk) ->
     ?KEY_EXCHANGE_DHE_PSK;
 key_exchange_alg(rsa_psk) ->
