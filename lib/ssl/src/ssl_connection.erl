@@ -592,7 +592,7 @@ certify(#server_key_exchange{} = KeyExchangeMsg,
   when Alg == dhe_dss; Alg == dhe_rsa;
        Alg == ecdhe_rsa; Alg == ecdhe_ecdsa;
        Alg == dh_anon; Alg == ecdh_anon;
-       Alg == psk; Alg == dhe_psk; Alg == rsa_psk;
+       Alg == psk; Alg == ecdhe_psk; Alg == dhe_psk; Alg == rsa_psk;
        Alg == srp_dss; Alg == srp_rsa; Alg == srp_anon ->
     case handle_server_key(KeyExchangeMsg, State0) of
 	#state{} = State1 ->
@@ -610,7 +610,7 @@ certify(#certificate_request{},
 	#state{negotiated_version = Version,
 	       key_algorithm = Alg} = State)
   when Alg == dh_anon; Alg == ecdh_anon;
-       Alg == psk; Alg == dhe_psk; Alg == rsa_psk;
+       Alg == psk; Alg == ecdhe_psk; Alg == dhe_psk; Alg == rsa_psk;
        Alg == srp_dss; Alg == srp_rsa; Alg == srp_anon ->
 
     Alert =  ?ALERT_REC(?FATAL,?HANDSHAKE_FAILURE),
@@ -765,6 +765,19 @@ certify_client_key_exchange(#client_ec_diffie_hellman_public{dh_public = ClientP
 certify_client_key_exchange(#client_psk_identity{identity = ClientPSKIdentity},
 			    #state{negotiated_version = Version} = State0) ->
     case server_psk_master_secret(ClientPSKIdentity, State0) of
+	#state{} = State1 ->
+	    {Record, State} = next_record(State1),
+	    next_state(certify, cipher, Record, State);
+	#alert{} = Alert ->
+	    handle_own_alert(Alert, Version, certify, State0)
+    end;
+
+certify_client_key_exchange(#client_ecdhe_psk_identity{
+			       identity =  ClientPSKIdentity,
+			       dh_public = ClientPublicEcDhPoint},
+			    #state{negotiated_version = Version,
+				   diffie_hellman_keys = ECDHKey} = State0) ->
+    case ecdhe_psk_master_secret(ClientPSKIdentity, ECDHKey, #'ECPoint'{point = ClientPublicEcDhPoint}, State0) of
 	#state{} = State1 ->
 	    {Record, State} = next_record(State1),
 	    next_state(certify, cipher, Record, State);
@@ -1630,7 +1643,9 @@ server_hello_done(#state{} = State) ->
     send_flight(HelloDone, waiting, State).
 
 certify_server(#state{key_algorithm = Algo} = State)
-  when Algo == dh_anon; Algo == ecdh_anon; Algo == psk; Algo == dhe_psk; Algo == srp_anon ->
+  when Algo == dh_anon; Algo == ecdh_anon;
+       Algo == psk; Algo == ecdhe_psk; Algo == dhe_psk;
+       Algo == srp_anon ->
     State;
 
 certify_server(#state{cert_db = CertDbHandle,
@@ -1713,6 +1728,26 @@ key_exchange(#state{role = server, key_algorithm = psk,
 					       ServerRandom,
 					       PrivateKey}),
     buffer_flight(Msg, State);
+
+key_exchange(#state{role = server, key_algorithm = ecdhe_psk,
+		    ssl_options = #ssl_options{psk_identity = PskIdentityHint},
+		    hashsign_algorithm = HashSignAlgo,
+		    private_key = PrivateKey,
+		    connection_states = ConnectionStates0,
+		    negotiated_version = Version
+		   } = State) ->
+    ECDHKeys = public_key:generate_key(select_curve(State)),
+    ConnectionState =
+	ssl_record:pending_connection_state(ConnectionStates0, read),
+    SecParams = ConnectionState#connection_state.security_parameters,
+    #security_parameters{client_random = ClientRandom,
+			 server_random = ServerRandom} = SecParams,
+    Msg =  ssl_handshake:key_exchange(server, Version, {ecdhe_psk, PskIdentityHint, ECDHKeys,
+					       HashSignAlgo, ClientRandom,
+					       ServerRandom,
+					       PrivateKey}),
+    State1 = buffer_flight(Msg, State),
+    State1#state{diffie_hellman_keys = ECDHKeys};
 
 key_exchange(#state{role = server, key_algorithm = dhe_psk,
 		    ssl_options = #ssl_options{psk_identity = PskIdentityHint},
@@ -1824,6 +1859,14 @@ key_exchange(#state{role = client,
 
 key_exchange(#state{role = client,
 		    ssl_options = SslOpts,
+		    key_algorithm = ecdhe_psk,
+		    negotiated_version = Version,
+		    diffie_hellman_keys = Keys} = State) ->
+    Msg =  ssl_handshake:key_exchange(client, Version, {ecdhe_psk, SslOpts#ssl_options.psk_identity, Keys}),
+    buffer_flight(Msg, State);
+
+key_exchange(#state{role = client,
+		    ssl_options = SslOpts,
 		    key_algorithm = dhe_psk,
 		    negotiated_version = Version,
 		    diffie_hellman_keys = {DhPubKey, _}} = State) ->
@@ -1883,7 +1926,7 @@ rsa_psk_key_exchange(_, _, _, _) ->
 
 request_client_cert(#state{key_algorithm = Alg} = State)
   when Alg == dh_anon; Alg == ecdh_anon;
-       Alg == psk; Alg == dhe_psk; Alg == rsa_psk;
+       Alg == psk; Alg == ecdhe_psk; Alg == dhe_psk; Alg == rsa_psk;
        Alg == srp_dss; Alg == srp_rsa; Alg == srp_anon ->
     State;
 
@@ -2008,6 +2051,13 @@ server_master_secret(#server_psk_params{
     %% store for later use
     State#state{psk_identity = IdentityHint};
 
+server_master_secret(#server_ecdhe_psk_params{
+			hint = IdentityHint,
+			dh_params = #server_ecdh_params{curve = ECCurve, public = ECServerPubKey}},
+		     State) ->
+    ECDHKeys = public_key:generate_key(ECCurve),
+    ecdhe_psk_master_secret(IdentityHint, ECDHKeys, #'ECPoint'{point = ECServerPubKey}, State#state{diffie_hellman_keys = ECDHKeys});
+
 server_master_secret(#server_dhe_psk_params{
 			hint = IdentityHint,
 			dh_params = #server_dh_params{dh_p = P, dh_g = G, dh_y = ServerPublicDhKey}},
@@ -2064,6 +2114,22 @@ server_psk_master_secret(ClientPSKIdentity,
 	{ok, PSK} when is_binary(PSK) ->
 	    Len = byte_size(PSK),
 	    PremasterSecret = <<?UINT16(Len), 0:(Len*8), ?UINT16(Len), PSK/binary>>,
+	    master_from_premaster_secret(PremasterSecret, State);
+	#alert{} = Alert ->
+	    Alert;
+	_ ->
+	    ?ALERT_REC(?FATAL, ?ILLEGAL_PARAMETER)
+    end.
+
+ecdhe_psk_master_secret(PSKIdentity, ECDHKeys, ECPoint,
+			#state{ssl_options = SslOpts} = State) ->
+    case handle_psk_identity(PSKIdentity, SslOpts#ssl_options.user_lookup_fun) of
+	{ok, PSK} when is_binary(PSK) ->
+	    ECDHSecret =
+		public_key:compute_key(ECPoint, ECDHKeys),
+	    ECDHLen = erlang:byte_size(ECDHSecret),
+	    Len = erlang:byte_size(PSK),
+	    PremasterSecret = <<?UINT16(ECDHLen), ECDHSecret/binary, ?UINT16(Len), PSK/binary>>,
 	    master_from_premaster_secret(PremasterSecret, State);
 	#alert{} = Alert ->
 	    Alert;
@@ -3127,6 +3193,7 @@ default_hashsign(_Version, KeyExchange)
   when KeyExchange == dh_anon;
        KeyExchange == ecdh_anon;
        KeyExchange == psk;
+       KeyExchange == ecdhe_psk;
        KeyExchange == dhe_psk;
        KeyExchange == rsa_psk;
        KeyExchange == srp_anon ->

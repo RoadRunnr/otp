@@ -828,7 +828,11 @@ psk_anon_suites() ->
 	 {dhe_psk, rc4_128, sha},
 	 {dhe_psk, '3des_ede_cbc', sha},
 	 {dhe_psk, aes_128_cbc, sha},
-	 {dhe_psk, aes_256_cbc, sha}],
+	 {dhe_psk, aes_256_cbc, sha},
+	 {ecdhe_psk, rc4_128, sha},
+	 {ecdhe_psk, '3des_ede_cbc', sha},
+	 {ecdhe_psk, aes_128_cbc, sha},
+	 {ecdhe_psk, aes_256_cbc, sha}],
     ssl_cipher:filter_suites(Suites).
 
 srp_suites() ->
