@@ -554,6 +554,15 @@ certify(#server_key_exchange{} = Msg,
         #state{role = client, key_algorithm = rsa} = State) -> 
     handle_unexpected_message(Msg, certify_server_keyexchange, State);
 
+certify(#certificate_request{},
+	#state{negotiated_version = Version,
+	       key_algorithm = Alg} = State)
+  when Alg == dh_anon; Alg == ecdh_anon;
+       Alg == psk; Alg == dhe_psk; Alg == rsa_psk;
+       Alg == srp_dss; Alg == srp_rsa; Alg == srp_anon ->
+    Alert =  ?ALERT_REC(?FATAL,?HANDSHAKE_FAILURE),
+    handle_own_alert(Alert, Version, certify, State);
+
 certify(#certificate_request{hashsign_algorithms = HashSigns},
 	#state{session = #session{own_certificate = Cert}} = State0) ->
     HashSign = ssl_handshake:select_hashsign(HashSigns, Cert),
@@ -1932,6 +1941,12 @@ rsa_psk_key_exchange(Version, PskIdentity, PremasterSecret, PublicKeyInfo = {Alg
 				PublicKeyInfo});
 rsa_psk_key_exchange(_, _, _, _) ->
     throw (?ALERT_REC(?FATAL,?HANDSHAKE_FAILURE)).
+
+request_client_cert(#state{key_algorithm = Alg} = State)
+  when Alg == dh_anon; Alg == ecdh_anon;
+       Alg == psk; Alg == dhe_psk; Alg == rsa_psk;
+       Alg == srp_dss; Alg == srp_rsa; Alg == srp_anon ->
+    State;
 
 request_client_cert(#state{ssl_options = #ssl_options{verify = verify_peer},
 			   connection_states = ConnectionStates0,
