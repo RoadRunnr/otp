@@ -665,7 +665,8 @@ handle_options(Opts0, _Role) ->
 			make_next_protocol_selector(
 			  handle_option(client_preferred_next_protocols, Opts, undefined)),
       log_alert = handle_option(log_alert, Opts, true),
-      server_name_indication = handle_option(server_name_indication, Opts, undefined)
+      server_name_indication = handle_option(server_name_indication, Opts, undefined),
+      honor_cipher_order = handle_option(honor_cipher_order, Opts, false)
      },
 
     CbInfo  = proplists:get_value(cb_info, Opts, {gen_tcp, tcp, tcp_closed, tcp_error}),    
@@ -677,7 +678,7 @@ handle_options(Opts0, _Role) ->
 		  reuse_session, reuse_sessions, ssl_imp,
 		  cb_info, renegotiate_at, secure_renegotiate, hibernate_after, 
 		  erl_dist, next_protocols_advertised,
-		  client_preferred_next_protocols, log_alert],
+		  client_preferred_next_protocols, log_alert, honor_cipher_order],
     
     SockOpts = lists:foldl(fun(Key, PropList) -> 
 				   proplists:delete(Key, PropList)
@@ -862,6 +863,8 @@ validate_option(server_name_indication, disable) ->
     disable;
 validate_option(server_name_indication, undefined) ->
     undefined;
+validate_option(honor_cipher_order, Value) when is_boolean(Value) ->
+    Value;
 validate_option(Opt, Value) ->
     throw({error, {options, {Opt, Value}}}).
 
