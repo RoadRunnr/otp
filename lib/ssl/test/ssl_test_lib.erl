@@ -863,6 +863,8 @@ anonymous_suites() ->
 	 {dh_anon, '3des_ede_cbc', sha},
 	 {dh_anon, aes_128_cbc, sha},
 	 {dh_anon, aes_256_cbc, sha},
+	 {dh_anon, aes_128_gcm, null},
+	 {dh_anon, aes_256_gcm, null},
 	 {ecdh_anon,rc4_128,sha},
 	 {ecdh_anon,'3des_ede_cbc',sha},
 	 {ecdh_anon,aes_128_cbc,sha},
