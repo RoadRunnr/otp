@@ -948,7 +948,7 @@ binary_cipher_suites(Version, [{_,_,_}| _] = Ciphers0) ->
 
 binary_cipher_suites(Version, [Cipher0 | _] = Ciphers0) when is_binary(Cipher0) ->
     All = ssl_cipher:suites(Version)
-	++ ssl_cipher:anonymous_suites()
+	++ ssl_cipher:anonymous_suites(Version)
 	++ ssl_cipher:psk_suites(Version)
 	++ ssl_cipher:srp_suites(),
     case [Cipher || Cipher <- Ciphers0, lists:member(Cipher, All)] of
