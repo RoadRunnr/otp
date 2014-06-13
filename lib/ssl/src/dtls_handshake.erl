@@ -23,9 +23,9 @@
 -include("ssl_alert.hrl").
 
 -export([client_hello/8, client_hello/9, hello/4,
-	 get_dtls_handshake/2,
-	 %%dtls_handshake_new_flight/1, dtls_handshake_new_epoch/1,
-	 encode_handshake/3]).
+	 hello_verify_request/1, get_dtls_handshake/2,
+	 dtls_handshake_new_flight/1, dtls_handshake_new_epoch/1,
+	 encode_handshake/4]).
 
 -type dtls_handshake() :: #client_hello{} | #hello_verify_request{} | 
 			  ssl_handshake:ssl_handshake().
@@ -128,12 +128,24 @@ hello(#client_hello{client_version = ClientVersion}, _Options, {_,_,_,_,Connecti
 %% 	    {reply, HelloVerifyRequest}
 %%     end.
 
+
+-spec hello_verify_request(binary()) -> #hello_verify_request{}.
+%%
+%% Description: Creates a hello verify request message sent by server to
+%% verify client
+%%--------------------------------------------------------------------
+hello_verify_request(Cookie) ->
+    %% TODO: DTLS Versions?????
+    #hello_verify_request{protocol_version = {254, 255}, cookie = Cookie}.
+
+%%--------------------------------------------------------------------
+
 %% %%--------------------------------------------------------------------
-encode_handshake(Handshake, Version, MsgSeq) ->
+encode_handshake(Handshake, Version, MsgSeq, Mss) ->
     {MsgType, Bin} = enc_handshake(Handshake, Version),
     Len = byte_size(Bin),
     EncHandshake = [MsgType, ?uint24(Len), ?uint16(MsgSeq), ?uint24(0), ?uint24(Len), Bin],
-    FragmentedHandshake = dtls_fragment(erlang:iolist_size(EncHandshake), MsgType, Len, MsgSeq, Bin, 0, []),
+    FragmentedHandshake = dtls_fragment(Mss, MsgType, Len, MsgSeq, Bin, 0, []),
     {EncHandshake, FragmentedHandshake}.
 
 %%--------------------------------------------------------------------
@@ -144,32 +156,32 @@ encode_handshake(Handshake, Version, MsgSeq) ->
 %% and returns it as a list of handshake messages, also returns a new
 %% DTLS state
 %%--------------------------------------------------------------------
-get_dtls_handshake(Record, <<>>) ->
-    get_dtls_handshake_aux(Record, #dtls_hs_state{}); %% Init handshake state!?
+%% get_dtls_handshake(Record, <<>>) ->
+%%     get_dtls_handshake_aux(Record, #dtls_hs_state{}); %% Init handshake state!?
 get_dtls_handshake(Record, HsState) ->
     get_dtls_handshake_aux(Record, HsState).
 
-%% %%--------------------------------------------------------------------
-%% -spec dtls_handshake_new_epoch(#dtls_hs_state{}) -> #dtls_hs_state{}.
-%% %%
-%% %% Description: Reset the DTLS decoder state for a new Epoch
-%% %%--------------------------------------------------------------------
+%%--------------------------------------------------------------------
+-spec dtls_handshake_new_epoch(#dtls_hs_state{}) -> #dtls_hs_state{}.
+%%
+%% Description: Reset the DTLS decoder state for a new Epoch
+%%--------------------------------------------------------------------
 %% dtls_handshake_new_epoch(<<>>) ->
 %%     dtls_hs_state_init();
-%% dtls_handshake_new_epoch(HsState) ->
-%%     HsState#dtls_hs_state{highest_record_seq = 0,
-%%   			  starting_read_seq = HsState#dtls_hs_state.current_read_seq,
-%%   			  fragments = gb_trees:empty(), completed = []}.
+dtls_handshake_new_epoch(HsState) ->
+    HsState#dtls_hs_state{highest_record_seq = 0,
+  			  starting_read_seq = HsState#dtls_hs_state.current_read_seq,
+  			  fragments = gb_trees:empty(), completed = []}.
 
-%% %--------------------------------------------------------------------
-%% -spec dtls_handshake_new_flight(integer() | undefined) -> #dtls_hs_state{}.
-%% %
-%% % Description: Init the DTLS decoder state for a new Flight
-%% dtls_handshake_new_flight(ExpectedReadReq) ->
-%%     #dtls_hs_state{current_read_seq = ExpectedReadReq,
-%% 		   highest_record_seq = 0,
-%% 		   starting_read_seq = 0,
-%% 		   fragments = gb_trees:empty(), completed = []}.
+%--------------------------------------------------------------------
+-spec dtls_handshake_new_flight(integer() | undefined) -> #dtls_hs_state{}.
+%
+% Description: Init the DTLS decoder state for a new Flight
+dtls_handshake_new_flight(ExpectedReadReq) ->
+    #dtls_hs_state{current_read_seq = ExpectedReadReq,
+		   highest_record_seq = 0,
+		   starting_read_seq = 0,
+		   fragments = gb_trees:empty(), completed = []}.
 
 %%--------------------------------------------------------------------
 %%% Internal functions

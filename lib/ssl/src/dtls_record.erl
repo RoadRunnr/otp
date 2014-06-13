@@ -35,7 +35,7 @@
 -export([decode_cipher_text/2]).
 
 %% Encoding
--export([encode_plain_text/4, encode_handshake/3, encode_change_cipher_spec/2]).
+-export([encode_plain_text/4, encode_plain_text/5, encode_handshake/3, encode_change_cipher_spec/2]).
 
 %% Protocol version handling
 -export([protocol_version/1, lowest_protocol_version/2,
@@ -156,6 +156,9 @@ encode_plain_text(Type, Version, Data,
     {CipherText, ConnectionStates#connection_states{current_write =
 							WriteState#connection_state{sequence_number = Seq +1}}}.
 
+encode_plain_text(Type, Version, Epoch, Seq, Data) ->
+    encode_tls_cipher_text(Type, Version, Epoch, Seq, Data).
+
 decode_cipher_text(#ssl_tls{type = Type, version = Version,
 			    epoch = Epoch,
 			    sequence_number = Seq,
@@ -258,7 +261,10 @@ lowest_protocol_version(_,Version) ->
 %%
 %% Description: Highest protocol version present in a list
 %%--------------------------------------------------------------------
-highest_protocol_version([Ver | Vers]) ->
+highest_protocol_version([]) ->
+    highest_protocol_version();
+highest_protocol_version(Versions) ->
+    [Ver | Vers] = Versions,
     highest_protocol_version(Ver, Vers).
 
 highest_protocol_version(Version, []) ->
@@ -288,21 +294,23 @@ supported_protocol_versions() ->
 	{ok, []} ->
 	    lists:map(Fun, supported_protocol_versions([]));
 	{ok, Vsns} when is_list(Vsns) ->
-	    supported_protocol_versions(Vsns);
+	    supported_protocol_versions(lists:map(Fun, Vsns));
 	{ok, Vsn} ->
-	    supported_protocol_versions([Vsn])
+	    supported_protocol_versions([Fun(Vsn)])
      end.
 
 supported_protocol_versions([]) ->
-    Vsns = supported_connection_protocol_versions([]),
+    Vsns = case sufficient_dtlsv1_2_crypto_support() of
+	       true ->
+		   ?ALL_DATAGRAM_SUPPORTED_VERSIONS;
+	       false ->
+		   ?MIN_DATAGRAM_SUPPORTED_VERSIONS
+	   end,
     application:set_env(ssl, dtls_protocol_version, Vsns),
     Vsns;
 
 supported_protocol_versions([_|_] = Vsns) ->
     Vsns.
-
-supported_connection_protocol_versions([]) ->
-    ?ALL_DATAGRAM_SUPPORTED_VERSIONS.
 
 %%--------------------------------------------------------------------
 -spec is_acceptable_version(dtls_version(), Supported :: [dtls_version()]) -> boolean().
@@ -412,6 +420,13 @@ calc_mac_hash(#connection_state{mac_secret = MacSecret,
     NewSeq = (Epoch bsl 48) + SeqNo,
     mac_hash(Version, MacAlg, MacSecret, NewSeq, Type,
 	     Length, Fragment).
+
+highest_protocol_version() ->
+    highest_protocol_version(supported_protocol_versions()).
+
+sufficient_dtlsv1_2_crypto_support() ->
+    CryptoSupport = crypto:supports(),
+    proplists:get_bool(sha256, proplists:get_value(hashs, CryptoSupport)).
 
 mac_hash(Version, MacAlg, MacSecret, SeqNo, Type, Length, Fragment) ->
     dtls_v1:mac_hash(Version, MacAlg, MacSecret, SeqNo, Type,

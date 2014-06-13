@@ -1001,7 +1001,7 @@ init_tls_version(Version, Config)
     application:load(ssl),
     application:set_env(ssl, dtls_protocol_version, Version),
     ssl:start(),
-    [{protocol, dtls}, {protocol_opts, [{cb_info, ssl_udp}]}|Config];
+    [{protocol, dtls}, {protocol_opts, [{protocol, dtls}, {cb_info, {dtls_udp, dtls_udp, udp_close, udp_error}}]}|Config];
 
 init_tls_version(Version, Config) ->
     ssl:stop(),
@@ -1183,10 +1183,14 @@ ssl_options(Option, Config) ->
     Opts ++ ProtocolOpts.
 
 protocol_version(Config) ->
-    case proplists:get_value(protocol, Config0) of
+    case proplists:get_value(protocol, Config) of
 	dtls ->
 	    dtls_record:protocol_version(dtls_record:highest_protocol_version([]));
 	_ ->
 	    tls_record:protocol_version(tls_record:highest_protocol_version([]))
    end.
 
+protocol_options(Config, Options) ->
+    Protocol = proplists:get_value(protocol, Config, tls),
+    {Protocol, Opts} = lists:keyfind(Protocol, 1, Options),
+    Opts.

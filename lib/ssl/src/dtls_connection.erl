@@ -55,9 +55,11 @@
 
 %% Data handling
 -export([%%write_application_data/3, 
-	 read_application_data/2%%,
+	 read_application_data/2,
 %%	 passive_receive/2,  next_record_if_active/1
+	 handle_packet/3
 	]).
+
 
 %% Called by tls_connection_sup
 -export([start_link/7]). 
@@ -140,29 +142,10 @@ send_change_cipher(Msg, #state{connection_states = ConnectionStates0,
 start_link(Role, Host, Port, Socket, Options, User, CbInfo) ->
     {ok, proc_lib:spawn_link(?MODULE, init, [[Role, Host, Port, Socket, Options, User, CbInfo]])}.
 
-init([Role, Host, Port, Socket, {SSLOpts0, _} = Options,  User, CbInfo]) ->
+init([Role, Host, Port, Socket, Options,  User, CbInfo]) ->
     process_flag(trap_exit, true),
-    State0 =  initial_state(Role, Host, Port, Socket, Options, User, CbInfo),
-    Handshake = ssl_handshake:init_handshake_history(),
-    TimeStamp = calendar:datetime_to_gregorian_seconds({date(), time()}),
-    try ssl_config:init(SSLOpts0, Role) of
-	{ok, Ref, CertDbHandle, FileRefHandle, CacheHandle, OwnCert, Key, DHParams} ->
-	    Session = State0#state.session,
-	    State = State0#state{
-		      tls_handshake_history = Handshake,
-		      session = Session#session{own_certificate = OwnCert,
-						time_stamp = TimeStamp},
-		      file_ref_db = FileRefHandle,
-		      cert_db_ref = Ref,
-		      cert_db = CertDbHandle,
-		      session_cache = CacheHandle,
-		      private_key = Key,
-		      diffie_hellman_params = DHParams},
-	    gen_fsm:enter_loop(?MODULE, [], hello, State, get_timeout(State))
-    catch
-	throw:Error ->
-	    gen_fsm:enter_loop(?MODULE, [], error, {Error,State0}, get_timeout(State0))
-    end.
+    State = initial_state(Role, Host, Port, Socket, Options, User, CbInfo),
+    gen_fsm:enter_loop(?MODULE, [], hello, State, get_timeout(State)).
 
 %%--------------------------------------------------------------------
 %% Description:There should be one instance of this function for each
@@ -344,7 +327,7 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 encode_handshake(Handshake, Version, ConnectionStates0, Hist0) ->
     Seq = sequence(ConnectionStates0),
     {EncHandshake, FragmentedHandshake} = dtls_handshake:encode_handshake(Handshake, Version,
-								      Seq),
+								      Seq, 1400),
     Hist = ssl_handshake:update_handshake_history(Hist0, EncHandshake),
     {Encoded, ConnectionStates} =
         dtls_record:encode_handshake(FragmentedHandshake, 
@@ -481,7 +464,7 @@ handle_normal_shutdown(_, _, _State) -> %% Place holder
 encode_change_cipher(#change_cipher_spec{}, Version, ConnectionStates) -> 
     dtls_record:encode_change_cipher_spec(Version, ConnectionStates).
 
-initial_state(Role, Host, Port, Socket, {SSLOptions, SocketOptions}, User,
+initial_state(Role, Host, Port, Socket, {SSLOptions, SocketOptions, Tracker}, User,
 	      {CbModule, DataTag, CloseTag, ErrorTag}) ->
     ConnectionStates = ssl_record:init_connection_states(Role),
     
@@ -495,9 +478,7 @@ initial_state(Role, Host, Port, Socket, {SSLOptions, SocketOptions}, User,
     Monitor = erlang:monitor(process, User),
 
     #state{socket_options = SocketOptions,
-	   %% We do not want to save the password in the state so that
-	   %% could be written in the clear into error logs.
-	   ssl_options = SSLOptions#ssl_options{password = undefined},	   
+	   ssl_options = SSLOptions,
 	   session = #session{is_resumable = new},
 	   transport_cb = CbModule,
 	   data_tag = DataTag,
@@ -515,7 +496,8 @@ initial_state(Role, Host, Port, Socket, {SSLOptions, SocketOptions}, User,
 	   renegotiation = {false, first},
 	   start_or_recv_from = undefined,
 	   send_queue = queue:new(),
-	   protocol_cb = ?MODULE
+	   protocol_cb = ?MODULE,
+	   tracker = Tracker
 	  }.
 read_application_data(_,State) ->
     {#ssl_tls{fragment = <<"place holder">>}, State}.
@@ -532,3 +514,50 @@ next_state_connection(_, State) -> %% Place holder
 sequence(_) -> 
     %%TODO real imp
     1.
+
+handle_packet(Address, Port, Packet) ->
+    try dtls_record:get_dtls_records(Packet, <<>>) of
+	%% expect client hello
+	{[#ssl_tls{type = ?HANDSHAKE, version = {254, _}} = Record], <<>>} ->
+	    handle_dtls_client_hello(Address, Port, Record);
+	Other ->
+	    {error, not_dtls}
+    catch
+	Class:Error ->
+	    {error, not_dtls}
+    end.
+
+handle_dtls_client_hello(Address, Port,
+			 #ssl_tls{epoch = Epoch, sequence_number = Seq,
+				  version = Version} = Record) ->
+    {[{Hello, _}], _} =
+	dtls_handshake:get_dtls_handshake(Record,
+					 dtls_handshake:dtls_handshake_new_flight(undefined)),
+    #client_hello{client_version = {Major, Minor},
+		  random = Random,
+		  session_id = SessionId,
+		  cipher_suites = CipherSuites,
+		  compression_methods = CompressionMethods} = Hello,
+    CookieData = [address_to_bin(Address, Port),
+		  <<?BYTE(Major), ?BYTE(Minor)>>,
+		  Random, SessionId, CipherSuites, CompressionMethods],
+    Cookie = crypto:hmac(sha, <<"secret">>, CookieData),
+
+    case Hello of
+	#client_hello{cookie = Cookie} ->
+	    accept;
+
+	_ ->
+	    %% generate HelloVerifyRequest
+	    {RequestFragment, _} = dtls_handshake:encode_handshake(
+				     dtls_handshake:hello_verify_request(Cookie),
+				     Version, 0, 1400),
+	    HelloVerifyRequest =
+		dtls_record:encode_plain_text(?HANDSHAKE, Version, Epoch, Seq, RequestFragment),
+	    {reply, HelloVerifyRequest}
+    end.
+
+address_to_bin({A,B,C,D}, Port) ->
+    <<0:80,16#ffff:16,A,B,C,D,Port:16>>;
+address_to_bin({A,B,C,D,E,F,G,H}, Port) ->
+    <<A:16,B:16,C:16,D:16,E:16,F:16,G:16,H:16,Port:16>>.

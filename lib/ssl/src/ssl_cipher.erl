@@ -302,7 +302,9 @@ aead_decipher(Type, #cipher_state{key = Key, iv = IV} = CipherState,
 suites({3, 0}) ->
     ssl_v3:suites();
 suites({3, N}) ->
-    tls_v1:suites(N).
+    tls_v1:suites(N);
+suites({254, N}) ->
+    dtls_v1:suites(N).
 
 all_suites(Version) ->
     suites(Version)

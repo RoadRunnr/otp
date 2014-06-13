@@ -80,7 +80,8 @@ groups() ->
      {renegotiate, [], renegotiate_tests()},
      {ciphers, [], cipher_tests()},
      {ciphers_ec, [], cipher_tests_ec()},
-     {error_handling_tests, [], error_handling_tests()}
+     {error_handling_tests, [], error_handling_tests()},
+     {error_handling_tests_tls, [], error_handling_tests_tls()}
     ].
 
 tls_versions_groups ()->
@@ -137,8 +138,7 @@ options_tests() ->
 options_tests_tls() ->
     [tls_misc_ssl_options,
      tls_tcp_reuseaddr,
-     tls_ciphersuite_vs_version
-].
+     tls_ciphersuite_vs_version].
 
 api_tests() ->
     [connection_info,
@@ -257,10 +257,9 @@ end_per_suite(_Config) ->
 init_per_group(GroupName, Config) ->
     case ssl_test_lib:is_tls_version(GroupName) andalso ssl_test_lib:sufficient_crypto_support(GroupName) of
 	true ->
-	    ssl_test_lib:init_tls_version(GroupName, Config),
-	    Config;
+	    ssl_test_lib:init_tls_version(GroupName, Config);
 	_ ->
-	    case ssl_test_lib:sufficient_crypto_support(GroupName, Config) of
+	    case ssl_test_lib:sufficient_crypto_support(GroupName) of
 		true ->
 		    ssl:start(),
 		    Config;
@@ -317,9 +316,9 @@ init_per_testcase(empty_protocol_versions, Config)  ->
 init_per_testcase(_TestCase, Config0) ->
     case proplists:get_value(protocol, Config0) of
 	dtls ->
-	    ct:log("TLS/SSL version ~p~n ", [tls_record:supported_protocol_versions()]);
+	    ct:log("DTLS version ~p~n ", [dtls_record:supported_protocol_versions()]);
 	_ ->
-	    ct:log("DTLS version ~p~n ", [dtls_record:supported_protocol_versions()])
+	    ct:log("TLS/SSL version ~p~n ", [tls_record:supported_protocol_versions()])
     end,
     Config = lists:keydelete(watchdog, 1, Config0),
     Dog = ct:timetrap(?TIMEOUT),
@@ -379,10 +378,12 @@ new_options_in_accept(Config) when is_list(Config) ->
     ServerOpts0 = ssl_test_lib:ssl_options(server_dsa_opts, Config),
     [_ , _ | ServerSslOpts] = ssl_test_lib:ssl_options(server_opts, Config), %% Remove non ssl opts
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
+    Version = ssl_test_lib:protocol_options(Config, [{tls, sslv3}, {dtls, dtlsv1}]),
+    Cipher = ssl_test_lib:protocol_options(Config, [{tls, {rsa,rc4_128,sha}}, {dtls, {rsa,aes_128_cbc,sha}}]),
     Server = ssl_test_lib:start_server([{node, ServerNode}, {port, 0}, 
 					{from, self()}, 
-					{ssl_extra_opts, [{versions, [sslv3]},
-							  {ciphers,[{rsa,rc4_128,sha}]} | ServerSslOpts]}, %% To be set in ssl_accept/3
+					{ssl_extra_opts, [{versions, [Version]},
+							  {ciphers,[Cipher]} | ServerSslOpts]}, %% To be set in ssl_accept/3
 					{mfa, {?MODULE, connection_info_result, []}},
 					{options, proplists:delete(cacertfile, ServerOpts0)}]),
     
@@ -391,12 +392,12 @@ new_options_in_accept(Config) when is_list(Config) ->
 					{host, Hostname},
 					{from, self()}, 
 					{mfa, {?MODULE, connection_info_result, []}},
-					{options, [{versions, [sslv3]} | ClientOpts]}]),
+					{options, [{versions, [Version]} | ClientOpts]}]),
     
     ct:log("Testcase ~p, Client ~p  Server ~p ~n",
 		       [self(), Client, Server]),
 
-    ServerMsg = ClientMsg = {ok, {sslv3, {rsa, rc4_128, sha}}},
+    ServerMsg = ClientMsg = {ok, {Version, Cipher}},
    
     ssl_test_lib:check_result(Server, ServerMsg, Client, ClientMsg),
     
@@ -410,6 +411,10 @@ connection_info(Config) when is_list(Config) ->
     ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
     ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
+
+    CipherIn = ssl_test_lib:protocol_options(Config, [{tls, {rsa,rc4_128,sha,no_export}}, {dtls, {rsa,aes_128_cbc,sha,no_export}}]),
+    CipherOut = ssl_test_lib:protocol_options(Config, [{tls, {rsa,rc4_128,sha}}, {dtls, {rsa,aes_128_cbc,sha}}]),
+
     Server = ssl_test_lib:start_server([{node, ServerNode}, {port, 0}, 
 					{from, self()}, 
 					{mfa, {?MODULE, connection_info_result, []}},
@@ -421,7 +426,7 @@ connection_info(Config) when is_list(Config) ->
 			   {from, self()}, 
 			   {mfa, {?MODULE, connection_info_result, []}},
 			   {options, 
-			    [{ciphers,[{rsa,rc4_128,sha,no_export}]} | 
+			    [{ciphers,[CipherIn]} |
 			     ClientOpts]}]),
     
     ct:log("Testcase ~p, Client ~p  Server ~p ~n",
@@ -429,7 +434,7 @@ connection_info(Config) when is_list(Config) ->
 
     Version = ssl_test_lib:protocol_version(Config),
     
-    ServerMsg = ClientMsg = {ok, {Version, {rsa,rc4_128,sha}}},
+    ServerMsg = ClientMsg = {ok, {Version, CipherOut}},
 			   
     ssl_test_lib:check_result(Server, ServerMsg, Client, ClientMsg),
     
@@ -1284,10 +1289,10 @@ dh_params(Config) when is_list(Config) ->
     ssl_test_lib:close(Client).
 
 %%--------------------------------------------------------------------
-upgrade() ->
+tls_upgrade() ->
     [{doc,"Test that you can upgrade an tcp connection to an ssl connection"}].
 
-upgrade(Config) when is_list(Config) -> 
+tls_upgrade(Config) when is_list(Config) ->
     ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
     ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
@@ -1333,10 +1338,10 @@ upgrade_result(Socket) ->
     end.
 
 %%--------------------------------------------------------------------
-upgrade_with_timeout() ->
+tls_upgrade_with_timeout() ->
     [{doc,"Test ssl_accept/3"}].
 
-upgrade_with_timeout(Config) when is_list(Config) -> 
+tls_upgrade_with_timeout(Config) when is_list(Config) ->
     ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
     ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
@@ -3085,12 +3090,11 @@ session_cache_process_mnesia(Config) when is_list(Config) ->
 versions_option() ->
     [{doc,"Test API versions option to connect/listen."}].
 versions_option(Config) when is_list(Config) ->
-    ConnType = proplists:get_value(connection_type, Config, stream),
     ClientOpts = ssl_test_lib:ssl_options(client_opts, Config),
     ServerOpts = ssl_test_lib:ssl_options(server_opts, Config),
 
-    Supported = proplists:get_value(supported, ssl:versions(ConnType)),
-    Available = proplists:get_value(available, ssl:versions(ConnType)),
+    Supported = proplists:get_value(supported, ssl:versions()),
+    Available = proplists:get_value(available, ssl:versions()),
     {ClientNode, ServerNode, Hostname} = ssl_test_lib:run_where(Config),
     Server = ssl_test_lib:start_server([{node, ServerNode}, {port, 0}, 
 					{from, self()}, 
