@@ -385,13 +385,14 @@ cipher(Version, Fragment,
 %%--------------------------------------------------------------------
 cipher_aead(Version, Fragment,
        #connection_state{cipher_state = CipherS0,
+			 sequence_number = SeqNo,
 			 security_parameters=
 			     #security_parameters{bulk_cipher_algorithm =
 						      BulkCipherAlgo}
 			} = WriteState0, AAD) ->
 
     {CipherFragment, CipherS1} =
-	ssl_cipher:cipher_aead(BulkCipherAlgo, CipherS0, AAD, Fragment, Version),
+	ssl_cipher:cipher_aead(BulkCipherAlgo, CipherS0, SeqNo, AAD, Fragment, Version),
     {CipherFragment,  WriteState0#connection_state{cipher_state = CipherS1}}.
 
 %%--------------------------------------------------------------------
@@ -419,12 +420,13 @@ decipher(Version, CipherFragment,
 %% Description: Payload decryption
 %%--------------------------------------------------------------------
 decipher_aead(Version, CipherFragment,
-	 #connection_state{security_parameters =
+	 #connection_state{sequence_number = SeqNo,
+			   security_parameters =
 			       #security_parameters{bulk_cipher_algorithm =
 							BulkCipherAlgo},
 			   cipher_state = CipherS0
 			  } = ReadState, AAD) ->
-    case ssl_cipher:decipher_aead(BulkCipherAlgo, CipherS0, AAD, CipherFragment, Version) of
+    case ssl_cipher:decipher_aead(BulkCipherAlgo, CipherS0, SeqNo, AAD, CipherFragment, Version) of
 	{PlainFragment, CipherS1} ->
 	    CS1 = ReadState#connection_state{cipher_state = CipherS1},
 	    {PlainFragment, CS1};

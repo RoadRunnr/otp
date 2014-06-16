@@ -138,7 +138,7 @@ encode_plain_text(Type, Version, Data,
 					   }= WriteState0} = ConnectionStates) ->
     {Comp, CompS1} = ssl_record:compress(CompAlg, Data, CompS0),
     WriteState1 = WriteState0#connection_state{compression_state = CompS1},
-    AAD = calc_aad(Type, Version, erlang:iolist_size(Comp), WriteState1),
+    AAD = calc_aad(Type, Version, WriteState1),
     {CipherFragment, WriteState} = ssl_record:cipher_aead(Version, Comp, WriteState1, AAD),
     CipherText = encode_tls_cipher_text(Type, Version, CipherFragment),
     {CipherText, ConnectionStates#connection_states{current_write = WriteState#connection_state{sequence_number = Seq +1}}};
@@ -175,7 +175,7 @@ decode_cipher_text(#ssl_tls{type = Type, version = Version,
 						    cipher_type = ?AEAD,
 						    compression_algorithm=CompAlg}
 					    } = ReadState0} = ConnnectionStates0) ->
-    AAD = calc_aad(Type, Version, size(CipherFragment) - 24, ReadState0),
+    AAD = calc_aad(Type, Version, ReadState0),
     case ssl_record:decipher_aead(Version, CipherFragment, ReadState0, AAD) of
 	{PlainFragment, ReadState1} ->
 	    {Plain, CompressionS1} = ssl_record:uncompress(CompAlg,
@@ -367,6 +367,6 @@ calc_mac_hash(Type, Version,
 	     MacSecret, SeqNo, Type,
 	     Length, PlainFragment).
 
-calc_aad(Type, {MajVer, MinVer}, Length,
+calc_aad(Type, {MajVer, MinVer},
 	 #connection_state{sequence_number = SeqNo}) ->
-    <<SeqNo:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>.
+    <<SeqNo:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer)>>.

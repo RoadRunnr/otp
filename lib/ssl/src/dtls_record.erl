@@ -132,7 +132,7 @@ encode_plain_text(Type, Version, Data,
 					   }= WriteState0} = ConnectionStates) ->
     {Comp, CompS1} = ssl_record:compress(CompAlg, Data, CompS0),
     WriteState1 = WriteState0#connection_state{compression_state = CompS1},
-    AAD = calc_aad(Type, Version, erlang:iolist_size(Comp), Epoch, Seq),
+    AAD = calc_aad(Type, Version, Epoch, Seq),
     {CipherFragment, WriteState} = ssl_record:cipher_aead(dtls_v1:corresponding_tls_version(Version),
 							  Comp, WriteState1, AAD),
     CipherText = encode_tls_cipher_text(Type, Version, Epoch, Seq, CipherFragment),
@@ -168,7 +168,7 @@ decode_cipher_text(#ssl_tls{type = Type, version = Version,
 						    cipher_type = ?AEAD,
 						    compression_algorithm=CompAlg}
 					    } = ReadState0}= ConnnectionStates0) ->
-    AAD = calc_aad(Type, Version, size(CipherFragment) - 24, Epoch, Seq),
+    AAD = calc_aad(Type, Version, Epoch, Seq),
     case ssl_record:decipher_aead(dtls_v1:corresponding_tls_version(Version),
 				  CipherFragment, ReadState0, AAD) of
 	{PlainFragment, ReadState1} ->
@@ -417,6 +417,6 @@ mac_hash(Version, MacAlg, MacSecret, SeqNo, Type, Length, Fragment) ->
     dtls_v1:mac_hash(Version, MacAlg, MacSecret, SeqNo, Type,
 		     Length, Fragment).
 
-calc_aad(Type, {MajVer, MinVer}, Length, Epoch, SeqNo) ->
+calc_aad(Type, {MajVer, MinVer}, Epoch, SeqNo) ->
     NewSeq = (Epoch bsl 48) + SeqNo,
-    <<NewSeq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer), ?UINT16(Length)>>.
+    <<NewSeq:64/integer, ?BYTE(Type), ?BYTE(MajVer), ?BYTE(MinVer)>>.

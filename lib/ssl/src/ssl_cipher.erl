@@ -33,7 +33,7 @@
 -include_lib("public_key/include/public_key.hrl").
 
 -export([security_parameters/2, security_parameters/3, suite_definition/1,
-	 cipher_init/3, decipher/5, cipher/5, decipher_aead/5, cipher_aead/5,
+	 cipher_init/3, decipher/5, cipher/5, decipher_aead/6, cipher_aead/6,
 	 suite/1, suites/1, all_suites/1, 
 	 ec_keyed_suites/0, anonymous_suites/1, psk_suites/1, srp_suites/0,
 	 openssl_suite/1, openssl_suite_name/1, filter/2, filter_suites/1,
@@ -133,17 +133,27 @@ cipher(?AES_CBC, CipherState, Mac, Fragment, Version) ->
 		 end, block_size(aes_128_cbc), CipherState, Mac, Fragment, Version).
 
 %%--------------------------------------------------------------------
--spec cipher_aead(cipher_enum(), #cipher_state{}, binary(), iodata(), ssl_record:ssl_version()) ->
+-spec cipher_aead(cipher_enum(), #cipher_state{}, integer(), binary(), iodata(), ssl_record:ssl_version()) ->
 		    {binary(), #cipher_state{}}.
 %%
 %% Description: Encrypts the data and protects associated data (AAD) using chipher
 %% described by cipher_enum() and updating the cipher state
 %% Use for suites that use authenticated encryption with associated data (AEAD)
 %%-------------------------------------------------------------------
-cipher_aead(?AES_GCM, CipherState, AAD, Fragment, Version) ->
-    aead_cipher(aes_gcm, CipherState, AAD, Fragment, Version).
+cipher_aead(?AES_GCM, CipherState, SeqNo, AAD, Fragment, Version) ->
+    aead_cipher(aes_gcm, CipherState, SeqNo, AAD, Fragment, Version);
+cipher_aead(?CHACHA20_POLY1305, CipherState, SeqNo, AAD, Fragment, Version) ->
+    aead_cipher(chacha20_poly1305, CipherState, SeqNo, AAD, Fragment, Version).
 
-aead_cipher(Type, #cipher_state{key=Key, iv = IV0, nonce = Nonce} = CipherState, AAD, Fragment, _Version) ->
+aead_cipher(chacha20_poly1305, #cipher_state{key=Key} = CipherState, SeqNo, AAD0, Fragment, _Version) ->
+    CipherLen = erlang:iolist_size(Fragment),
+    AAD = <<AAD0/binary, ?UINT16(CipherLen)>>,
+    Nonce = <<SeqNo:64/integer>>,
+    {Content, CipherTag} = crypto:block_encrypt(chacha20_poly1305, Key, Nonce, {AAD, Fragment}),
+    {<<Content/binary, CipherTag/binary>>, CipherState};
+aead_cipher(Type, #cipher_state{key=Key, iv = IV0, nonce = Nonce} = CipherState, _SeqNo, AAD0, Fragment, _Version) ->
+    CipherLen = erlang:iolist_size(Fragment),
+    AAD = <<AAD0/binary, ?UINT16(CipherLen)>>,
     <<Salt:4/bytes, _/binary>> = IV0,
     IV = <<Salt/binary, Nonce:64/integer>>,
     {Content, CipherTag} = crypto:block_encrypt(Type, Key, IV, {AAD, Fragment}),
@@ -214,15 +224,17 @@ decipher(?AES_CBC, HashSz, CipherState, Fragment, Version) ->
 		   end, CipherState, HashSz, Fragment, Version).
 
 %%--------------------------------------------------------------------
--spec decipher_aead(cipher_enum(), integer(), #cipher_state{}, binary(), ssl_record:ssl_version()) ->
+-spec decipher_aead(cipher_enum(),  #cipher_state{}, integer(), binary(), binary(), ssl_record:ssl_version()) ->
 			   {binary(), binary(), #cipher_state{}} | #alert{}.
 %%
 %% Description: Decrypts the data and checks the associated data (AAD) MAC using
 %% cipher described by cipher_enum() and updating the cipher state.
 %% Use for suites that use authenticated encryption with associated data (AEAD)
 %%-------------------------------------------------------------------
-decipher_aead(?AES_GCM, CipherState, AAD, Fragment, Version) ->
-    aead_decipher(aes_gcm, CipherState, AAD, Fragment, Version).
+decipher_aead(?AES_GCM, CipherState, SeqNo, AAD, Fragment, Version) ->
+    aead_decipher(aes_gcm, CipherState, SeqNo, AAD, Fragment, Version);
+decipher_aead(?CHACHA20_POLY1305, CipherState, SeqNo, AAD, Fragment, Version) ->
+    aead_decipher(chacha20_poly1305, CipherState, SeqNo, AAD, Fragment, Version).
 
 block_decipher(Fun, #cipher_state{key=Key, iv=IV} = CipherState0, 
 	       HashSz, Fragment, Version) ->
@@ -254,14 +266,24 @@ block_decipher(Fun, #cipher_state{key=Key, iv=IV} = CipherState0,
 	    ?ALERT_REC(?FATAL, ?BAD_RECORD_MAC)
     end.
 
-aead_decipher(Type, #cipher_state{key = Key, iv=IV0} = CipherState,
-	      AAD, Fragment, _Version) ->
+aead_ciphertext_to_state(chacha20_poly1305, SeqNo, _IV, AAD0, Fragment, _Version) ->
+    CipherLen = size(Fragment) - 16,
+    <<CipherText:CipherLen/bytes, CipherTag:16/bytes>> = Fragment,
+    AAD = <<AAD0/binary, ?UINT16(CipherLen)>>,
+    Nonce = <<SeqNo:64/integer>>,
+    {Nonce, AAD, CipherText, CipherTag};
+aead_ciphertext_to_state(_, _SeqNo, <<Salt:4/bytes, _/binary>>, AAD0, Fragment, _Version) ->
+    CipherLen = size(Fragment) - 24,
+    <<ExplicitNonce:8/bytes, CipherText:CipherLen/bytes,  CipherTag:16/bytes>> = Fragment,
+    AAD = <<AAD0/binary, ?UINT16(CipherLen)>>,
+    Nonce = <<Salt/binary, ExplicitNonce/binary>>,
+    {Nonce, AAD, CipherText, CipherTag}.
+
+aead_decipher(Type, #cipher_state{key = Key, iv = IV} = CipherState,
+	      SeqNo, AAD0, Fragment, Version) ->
     try
-	CipherLen = size(Fragment) - 24,
-	<<Nonce:8/bytes, CipherText:CipherLen/bytes, Tag:16/bytes>> = Fragment,
-	<<Salt:4/bytes, _/binary>> = IV0,
-	IV = <<Salt/binary, Nonce/binary>>,
-	case crypto:block_decrypt(Type, Key, IV, {AAD, CipherText, Tag}) of
+	{Nonce, AAD, CipherText, CipherTag} = aead_ciphertext_to_state(Type, SeqNo, IV, AAD0, Fragment, Version),
+	case crypto:block_decrypt(Type, Key, Nonce, {AAD, CipherText, CipherTag}) of
 	    Content when is_binary(Content) ->
 		{Content, CipherState};
 	    _ ->
@@ -668,7 +690,15 @@ suite_definition(?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) ->
 suite_definition(?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256) ->
     {ecdh_rsa, aes_128_gcm, null, sha256};
 suite_definition(?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384) ->
-    {ecdh_rsa, aes_256_gcm, null, sha384}.
+    {ecdh_rsa, aes_256_gcm, null, sha384};
+
+%% draft-agl-tls-chacha20poly1305-04 Chacha20/Poly1305 Suites
+suite_definition(?TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256) ->
+    {ecdhe_rsa, chacha20_poly1305, null, sha256};
+suite_definition(?TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256) ->
+    {ecdhe_ecdsa, chacha20_poly1305, null, sha256};
+suite_definition(?TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256) ->
+    {dhe_rsa, chacha20_poly1305, null, sha256}.
 
 %%--------------------------------------------------------------------
 -spec suite(erl_cipher_suite()) -> cipher_suite().
@@ -948,7 +978,16 @@ suite({ecdhe_rsa, aes_256_gcm, null}) ->
 suite({ecdh_rsa, aes_128_gcm, null}) ->
     ?TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256;
 suite({ecdh_rsa, aes_256_gcm, null}) ->
-    ?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384.
+    ?TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384;
+
+
+%% draft-agl-tls-chacha20poly1305-04 Chacha20/Poly1305 Suites
+suite({ecdhe_rsa, chacha20_poly1305, null}) ->
+    ?TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256;
+suite({ecdhe_ecdsa, chacha20_poly1305, null}) ->
+    ?TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256;
+suite({dhe_rsa, chacha20_poly1305, null}) ->
+    ?TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256.
 
 %%--------------------------------------------------------------------
 -spec openssl_suite(openssl_cipher_suite()) -> cipher_suite().
@@ -1367,6 +1406,9 @@ is_acceptable_cipher(Cipher, Algos)
   when Cipher == aes_128_gcm;
        Cipher == aes_256_gcm ->
     proplists:get_bool(aes_gcm, Algos);
+is_acceptable_cipher(Cipher, Algos)
+  when Cipher == chacha20_poly1305 ->
+    proplists:get_bool(Cipher, Algos);
 is_acceptable_cipher(_, _) ->
     true.
 
@@ -1397,7 +1439,9 @@ bulk_cipher_algorithm(Cipher) when Cipher == aes_128_cbc;
     ?AES_CBC;
 bulk_cipher_algorithm(Cipher) when Cipher == aes_128_gcm;
 				   Cipher == aes_256_gcm ->
-    ?AES_GCM.
+    ?AES_GCM;
+bulk_cipher_algorithm(chacha20_poly1305) ->
+    ?CHACHA20_POLY1305.
 
 type(Cipher) when Cipher == null;
 		  Cipher == rc4_128 ->
@@ -1409,7 +1453,8 @@ type(Cipher) when Cipher == des_cbc;
 		  Cipher == aes_256_cbc ->
     ?BLOCK;
 type(Cipher) when Cipher == aes_128_gcm;
-		  Cipher == aes_256_gcm ->
+		  Cipher == aes_256_gcm;
+		  Cipher == chacha20_poly1305 ->
     ?AEAD.
 
 key_material(null) ->
@@ -1427,6 +1472,8 @@ key_material(aes_256_cbc) ->
 key_material(aes_128_gcm) ->
     16;
 key_material(aes_256_gcm) ->
+    32;
+key_material(chacha20_poly1305) ->
     32.
 
 expanded_key_material(null) ->
@@ -1440,7 +1487,8 @@ expanded_key_material('3des_ede_cbc') ->
 expanded_key_material(Cipher) when Cipher == aes_128_cbc;
 				   Cipher == aes_256_cbc;
 				   Cipher == aes_128_gcm;
-				   Cipher == aes_256_gcm ->
+				   Cipher == aes_256_gcm;
+				   Cipher == chacha20_poly1305 ->
     unknown.  
 
 
@@ -1455,11 +1503,13 @@ effective_key_bits(Cipher) when Cipher == rc4_128;
 effective_key_bits('3des_ede_cbc') ->
     168;
 effective_key_bits(Cipher) when Cipher == aes_256_cbc;
-				Cipher == aes_256_gcm ->
+				Cipher == aes_256_gcm;
+				Cipher == chacha20_poly1305 ->
     256.
 
 iv_size(Cipher) when Cipher == null;
-		     Cipher == rc4_128 ->
+		     Cipher == rc4_128;
+		     Cipher == chacha20_poly1305->
     0;
 
 iv_size(Cipher) when Cipher == aes_128_gcm;
@@ -1476,7 +1526,8 @@ block_size(Cipher) when Cipher == des_cbc;
 block_size(Cipher) when Cipher == aes_128_cbc;
 			Cipher == aes_256_cbc;
 			Cipher == aes_128_gcm;
-			Cipher == aes_256_gcm ->
+			Cipher == aes_256_gcm;
+			Cipher == chacha20_poly1305 ->
     16.
 
 prf_algorithm(default_prf, {3, N}) when N >= 3 ->
@@ -1632,7 +1683,8 @@ dhe_rsa_suites() ->
      ?TLS_DHE_RSA_WITH_AES_128_CBC_SHA,
      ?TLS_DHE_RSA_WITH_DES_CBC_SHA,
      ?TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
-     ?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384].
+     ?TLS_DHE_RSA_WITH_AES_256_GCM_SHA384,
+     ?TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256].
 
 psk_rsa_suites() ->
     [?TLS_RSA_PSK_WITH_AES_256_GCM_SHA384,
@@ -1681,7 +1733,8 @@ ecdhe_rsa_suites() ->
      ?TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
      ?TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
      ?TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-     ?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384].
+     ?TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+     ?TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256].
 
 dsa_signed_suites() ->
     dhe_dss_suites() ++ srp_dss_suites().
@@ -1731,7 +1784,8 @@ ecdhe_ecdsa_suites() ->
      ?TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
      ?TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
      ?TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-     ?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384].
+     ?TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+     ?TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256].
 
 filter_keyuse(OtpCert, Ciphers, Suites, SignSuites) ->
     TBSCert = OtpCert#'OTPCertificate'.tbsCertificate, 
