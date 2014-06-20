@@ -545,6 +545,7 @@ handle_dtls_client_hello(Address, Port,
 
     case Hello of
 	#client_hello{cookie = Cookie} ->
+	    io:format("DTLS: Accept~n"),
 	    accept;
 
 	_ ->

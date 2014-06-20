@@ -90,6 +90,7 @@ recv(Socket, Length) ->
 recv(Socket, Length, Timeout) when is_port(Socket) ->
     case gen_udp:recv(Socket, Length, Timeout) of
 	{ok, {_Address, _Port, Packet}} ->
+	    io:format("dtls_udp:recv: ~p:~w: ~p~n", [_Address, _Port, Packet]),
 	    {ok, Packet};
 	Error ->
 	    Error
@@ -104,6 +105,7 @@ shutdown(Socket, How) ->
 
 %% map UDP port info's to three-tupple format
 handle_ssl_info(Socket, {udp, Socket, _Address, _Port, Packet}) ->
+    io:format("handle_ssl_info: ~p,~p:~w: ~p~n", [Socket, _Address, _Port, Packet]),
     {next, {?PROTOCOL, Socket, Packet}};
 handle_ssl_info(_, Info) ->
     Info.
@@ -290,11 +292,14 @@ handle_info(timeout, State0 = #state{state = accepting}) ->
 
 handle_info(Info = {udp, Socket, IP, InPortNo, Packet},
 	    State0 = #state{socket = Socket, ip_conns = IpConns}) ->
+    io:format("handle_info: ~p~n", [Info]),
     IpKey = {IP, InPortNo},
     State1 = case gb_trees:lookup(IpKey, IpConns) of
 		 none ->
+		     io:format("handle_accept(~p)~n", [[IpKey, Packet, State0]]),
 		     handle_accept(IpKey, Packet, State0);
 		 {value, SslSocket} ->
+		     io:format("handle_packet(~p)~n", [[IpKey, SslSocket, Packet, State0]]),
 		     handle_packet(IpKey, SslSocket, Packet, State0)
 	    end,
     inet:setopts(Socket, [{active, once}]),
@@ -324,6 +329,7 @@ handle_accept(IpKey = {Address, Port}, Packet,
 	    State0;
 
 	accept ->
+	    io:format("DTLS_UDP: accepting....~n"),
 	    %% NOTE: ClientHello's are decode twice, should this be changed?
 	    {Owner, _} = Accepting,
 	    SslSocketId = make_ref(),
@@ -380,6 +386,7 @@ socket_shutdown(_IpKey, _Args, _From, State) ->
 
 socket_recv(IpKey, {_Length = 0, _Timeout = 0}, _From,
 	    State = #state{ip_conns = IpConns0}) ->
+    io:format("socket_recv: ~p~n", [IpKey]),
     SslSocket = gb_trees:get(IpKey, IpConns0),
     IpConns = gb_trees:update(IpKey,
 			      SslSocket#ssl_socket{queue = queue:new()},
@@ -395,6 +402,7 @@ socket_send({Address, Port}, Packet, _From,
 
 socket_setopts(IpKey, {SslSocketId, Options}, _From,
 	       State = #state{ip_conns = IpConns0}) ->
+    io:format("socket_setopts: ~p:~p~n", [IpKey, Options]),
     case proplists:get_value(active, Options) of
 	Active when Active /= false ->
 	    SslSocket = gb_trees:get(IpKey, IpConns0),

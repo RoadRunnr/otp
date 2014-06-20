@@ -206,6 +206,7 @@ ssl_accept(ListenSocket) ->
     ssl_accept(ListenSocket, infinity).
 
 ssl_accept(#sslsocket{} = Socket, Timeout) ->
+    io:format("ssl_accept going to handshake~n"),
     ssl_connection:handshake(Socket, Timeout);
     
 ssl_accept(ListenSocket, SslOptions) ->
@@ -621,6 +622,7 @@ handle_options(Opts0) ->
 		       [RecordCb:protocol_version(Vsn) || Vsn <- Vsns]
 	       end,
 
+    io:format("handle_options: Value: ~p, RecordCB: ~p, Versions: ~p~n", [proplists:get_value(ciphers, Opts, []), RecordCb, Versions]),
     SSLOptions = #ssl_options{
 		    versions   = Versions,
 		    verify     = validate_option(verify, Verify),
@@ -934,6 +936,7 @@ emulated_options([], Inet,Emulated) ->
     {Inet, Emulated}.
 
 handle_cipher_option(Value, Version)  when is_list(Value) ->
+    io:format("handle_cipher_option(~p, ~p)~n", [Value, Version]),
     try binary_cipher_suites(Version, Value) of
 	Suites ->
 	    Suites
@@ -1112,6 +1115,7 @@ new_ssl_options([{psk_identity, Value} | Rest], #ssl_options{} = Opts, RecordCB)
 new_ssl_options([{srp_identity, Value} | Rest], #ssl_options{} = Opts, RecordCB) -> 
     new_ssl_options(Rest, Opts#ssl_options{srp_identity = validate_option(srp_identity, Value)}, RecordCB);
 new_ssl_options([{ciphers, Value} | Rest], #ssl_options{versions = Versions} = Opts, RecordCB) -> 
+    io:format("new_ssl_options: Value: ~p, RecordCB: ~p, Versions: ~p~n", [Value, RecordCB, Versions]),
     Ciphers = handle_cipher_option(Value, RecordCB:highest_protocol_version(Versions)),
     new_ssl_options(Rest, 
 		    Opts#ssl_options{ciphers = Ciphers}, RecordCB);
