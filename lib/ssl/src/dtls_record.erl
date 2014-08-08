@@ -35,7 +35,7 @@
 -export([decode_cipher_text/2]).
 
 %% Encoding
--export([encode_plain_text/4, encode_plain_text/5, encode_handshake/3, encode_change_cipher_spec/2]).
+-export([encode_plain_text/4]).
 
 %% Protocol version handling
 -export([protocol_version/1, lowest_protocol_version/2,
@@ -147,6 +147,7 @@ encode_plain_text(Type, Version, Data,
 						      security_parameters=
 							  #security_parameters{compression_algorithm=CompAlg}
 						     }= WriteState0} = ConnectionStates) ->
+    ct:pal("encode_plain_text: ~p", [{Type, Version, Data}]),
     {Comp, CompS1} = ssl_record:compress(CompAlg, Data, CompS0),
     WriteState1 = WriteState0#connection_state{compression_state = CompS1},
     MacHash = calc_mac_hash(WriteState1, Type, Version, Epoch, Seq, Comp),
@@ -155,9 +156,6 @@ encode_plain_text(Type, Version, Data,
     CipherText = encode_tls_cipher_text(Type, Version, Epoch, Seq, CipherFragment),
     {CipherText, ConnectionStates#connection_states{current_write =
 							WriteState#connection_state{sequence_number = Seq +1}}}.
-
-encode_plain_text(Type, Version, Epoch, Seq, Data) ->
-    encode_tls_cipher_text(Type, Version, Epoch, Seq, Data).
 
 decode_cipher_text(#ssl_tls{type = Type, version = Version,
 			    epoch = Epoch,
@@ -210,23 +208,6 @@ decode_cipher_text(#ssl_tls{type = Type, version = Version,
 	false ->
 	    ?ALERT_REC(?FATAL, ?BAD_RECORD_MAC)
     end.
-%%--------------------------------------------------------------------
--spec encode_handshake(iolist(), dtls_version(), #connection_states{}) ->
-			      {iolist(), #connection_states{}}.
-%%
-%% Description: Encodes a handshake message to send on the ssl-socket.
-%%--------------------------------------------------------------------
-encode_handshake(Frag, Version, ConnectionStates) ->
-    encode_plain_text(?HANDSHAKE, Version, Frag, ConnectionStates).
-
-%%--------------------------------------------------------------------
--spec encode_change_cipher_spec(dtls_version(), #connection_states{}) ->
-				       {iolist(), #connection_states{}}.
-%%
-%% Description: Encodes a change_cipher_spec-message to send on the ssl socket.
-%%--------------------------------------------------------------------
-encode_change_cipher_spec(Version, ConnectionStates) ->
-    encode_plain_text(?CHANGE_CIPHER_SPEC, Version, <<1:8>>, ConnectionStates).
 
 %%--------------------------------------------------------------------
 -spec protocol_version(dtls_atom_version() | dtls_version()) ->

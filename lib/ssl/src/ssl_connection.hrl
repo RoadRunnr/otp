@@ -79,7 +79,15 @@
           expecting_next_protocol_negotiation = false ::boolean(),
           next_protocol = undefined                   :: undefined | binary(),
 	  client_ecc,          % {Curves, PointFmt}
-	  tracker              :: pid() %% Tracker process for listen socket
+	  tracker              :: pid(), %% Tracker process for listen socket
+
+	  % DTLS specific stuff
+	  dtls_retransmit_timer,
+	  last_retransmit,
+	  last_read_seq,
+	  msl_timer,
+	  flight_state,
+	  flight_buffer         % buffer of not yet ACKed TLS records
 	 }).
 
 -define(DEFAULT_DIFFIE_HELLMAN_PARAMS,

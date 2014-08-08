@@ -98,7 +98,7 @@ ssl_accept(Connection, Port, Socket, Opts, User, CbInfo, Timeout) ->
 %% Description: Starts ssl handshake. 
 %%--------------------------------------------------------------------
 handshake(#sslsocket{pid = Pid}, Timeout) ->  
-    io:format("handshake: #1~n"),
+    ct:pal("handshake: #1~n"),
     case sync_send_all_state_event(Pid, {start, Timeout}) of
 	connected ->
 	    ok;
@@ -113,7 +113,7 @@ handshake(#sslsocket{pid = Pid}, Timeout) ->
 %% Description: Starts ssl handshake with some new options 
 %%--------------------------------------------------------------------
 handshake(#sslsocket{pid = Pid}, SslOptions, Timeout) ->  
-    io:format("handshake: #2~n"),
+    ct:pal("handshake: #2~n"),
     case sync_send_all_state_event(Pid, {start, SslOptions, Timeout}) of
 	connected ->
 	    ok;
@@ -698,20 +698,21 @@ handle_sync_event({application_data, Data}, From, StateName,
 handle_sync_event({start, Timeout}, StartFrom, hello, #state{role = Role,
 							     protocol_cb = Connection, 
 							     ssl_options = SSLOpts} = State0) ->
-    io:format("handle_sync_event: start~n"),
+    ct:pal("handle_sync_event: start~n"),
     try 
 	State = ssl_config(SSLOpts, Role, State0),
-	io:format("handle_sync_event: ssl_config~n"),
+	ct:pal("handle_sync_event: ssl_config~n"),
 	Timer = start_or_recv_cancel_timer(Timeout, StartFrom),
-	io:format("handle_sync_event: start_or_recv~n"),
+	ct:pal("handle_sync_event: start_or_recv~n"),
 	Connection:hello(start, State#state{start_or_recv_from = StartFrom,
 					    timer = Timer})
     catch throw:Error ->
+	    ct:pal("catch throw: ~p~n", [Error]),
 	    {stop, normal, {error, Error}, State0}
     end;
 
 handle_sync_event({start, {Opts, EmOpts}, Timeout}, From, StateName, State) ->
-    io:format("handle_sync_event: start #2~n"),
+    ct:pal("handle_sync_event: start #2~n"),
     try 
 	handle_sync_event({start, Timeout}, From, StateName, State#state{socket_options = EmOpts,
 									 ssl_options = Opts})
@@ -728,11 +729,11 @@ handle_sync_event({start, {Opts, EmOpts}, Timeout}, From, StateName, State) ->
 %% here to make sure it is the users problem and not owers if
 %% they upgrade an active socket. 
 handle_sync_event({start,_}, _, connection, State) ->
-    io:format("handle_sync_event: start #3~n"),
+    ct:pal("handle_sync_event: start #3~n"),
     {reply, connected, connection, State, get_timeout(State)};
 
 handle_sync_event({start, Timeout}, StartFrom, StateName,  #state{role = Role, ssl_options = SslOpts} = State0) ->
-    io:format("handle_sync_event: start #4~n"),
+    ct:pal("handle_sync_event: start #4~n"),
     try 
 	State = ssl_config(SslOpts, Role, State0),
 	Timer = start_or_recv_cancel_timer(Timeout, StartFrom),
@@ -883,7 +884,11 @@ handle_sync_event(session_info, _, StateName,
 handle_sync_event(peer_certificate, _, StateName, 
 		  #state{session = #session{peer_certificate = Cert}} 
 		  = State) ->
-    {reply, {ok, Cert}, StateName, State, get_timeout(State)}.
+    {reply, {ok, Cert}, StateName, State, get_timeout(State)};
+
+handle_sync_event(Event, _, StateName, State) ->
+    ct:pal("handle_sync_event: ~p~n", [Event]),
+    {reply, error, StateName, State, get_timeout(State)}.
 
 handle_info({ErrorTag, Socket, econnaborted}, StateName,  
 	    #state{socket = Socket, transport_cb = Transport,

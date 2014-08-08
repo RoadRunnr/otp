@@ -72,13 +72,13 @@
 %%====================================================================
 %% Internal application API
 %%====================================================================	     
-start_fsm(Role, Host, Port, Socket, {#ssl_options{erl_dist = false},_} = Opts,
+start_fsm(Role, Host, Port, Socket, {#ssl_options{erl_dist = false},_, Tracker} = Opts,
 	  User, {CbModule, _,_, _} = CbInfo, 
 	  Timeout) -> 
     try 
 	{ok, Pid} = dtls_connection_sup:start_child([Role, Host, Port, Socket, 
 						     Opts, User, CbInfo]), 
-	{ok, SslSocket} = ssl_connection:socket_control(?MODULE, Socket, Pid, CbModule),
+	{ok, SslSocket} = ssl_connection:socket_control(?MODULE, Socket, Pid, CbModule, Tracker),
 	ok = ssl_connection:handshake(SslSocket, Timeout),
 	{ok, SslSocket} 
     catch
@@ -86,13 +86,13 @@ start_fsm(Role, Host, Port, Socket, {#ssl_options{erl_dist = false},_} = Opts,
 	    Error
     end;
 
-start_fsm(Role, Host, Port, Socket, {#ssl_options{erl_dist = true},_} = Opts,
+start_fsm(Role, Host, Port, Socket, {#ssl_options{erl_dist = true},_, Tracker} = Opts,
 	  User, {CbModule, _,_, _} = CbInfo, 
 	  Timeout) -> 
     try 
 	{ok, Pid} = dtls_connection_sup:start_child_dist([Role, Host, Port, Socket, 
 							  Opts, User, CbInfo]), 
-	{ok, SslSocket} = ssl_connection:socket_control(?MODULE, Socket, Pid, CbModule),
+	{ok, SslSocket} = ssl_connection:socket_control(?MODULE, Socket, Pid, CbModule, Tracker),
 	ok = ssl_connection:handshake(SslSocket, Timeout),
 	{ok, SslSocket} 
     catch
@@ -161,20 +161,28 @@ hello(start, #state{host = Host, port = Port, role = client,
 		    transport_cb = Transport, socket = Socket,
 		    connection_states = ConnectionStates0,
 		    renegotiation = {Renegotiation, _}} = State0) ->
+    ct:pal("hello #1~n"),
     Hello = dtls_handshake:client_hello(Host, Port, ConnectionStates0, SslOpts,
 					Cache, CacheCb, Renegotiation, Cert),
-    
+
+    ct:pal("hello #2~n"),
     Version = Hello#client_hello.client_version,
+    ct:pal("hello #3~n"),
     Handshake0 = ssl_handshake:init_handshake_history(),
+    ct:pal("hello #4~n"),
     {BinMsg, ConnectionStates, Handshake} =
         encode_handshake(Hello, Version, ConnectionStates0, Handshake0),
+    ct:pal("hello #5~n"),
     Transport:send(Socket, BinMsg),
+    ct:pal("hello #6~n"),
     State1 = State0#state{connection_states = ConnectionStates,
 			  negotiated_version = Version, %% Requested version
 			  session =
 			      Session0#session{session_id = Hello#client_hello.session_id},
 			  tls_handshake_history = Handshake},
+    ct:pal("hello #7~n"),
     {Record, State} = next_record(State1),
+    ct:pal("hello #8~n"),
     next_state(hello, hello, Record, State);
 
 hello(Hello = #client_hello{client_version = ClientVersion,
@@ -185,6 +193,7 @@ hello(Hello = #client_hello{client_version = ClientVersion,
 		     session_cache = Cache,
 		     session_cache_cb = CacheCb,
 		     ssl_options = SslOpts}) ->
+    ct:pal("hello #9~n"),
     case dtls_handshake:hello(Hello, SslOpts, {Port, Session0, Cache, CacheCb,
 					      ConnectionStates0, Cert}, Renegotiation) of
         {Version, {Type, Session},
@@ -199,6 +208,7 @@ hello(Hello = #client_hello{client_version = ClientVersion,
 					     session = Session,
 					     client_ecc = {EllipticCurves, EcPointFormats}}, ?MODULE);
         #alert{} = Alert ->
+	    ct:pal("hello Allert: ~p~n", [Alert]),
             handle_own_alert(Alert, ClientVersion, hello, State)
     end;
 hello(Hello,
@@ -207,6 +217,7 @@ hello(Hello,
 	     role = client,
 	     renegotiation = {Renegotiation, _},
 	     ssl_options = SslOptions} = State) ->
+    ct:pal("hello #10~n"),
     case dtls_handshake:hello(Hello, SslOptions, ConnectionStates0, Renegotiation) of
 	#alert{} = Alert ->
 	    handle_own_alert(Alert, ReqVersion, hello, State);
@@ -325,13 +336,18 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 encode_handshake(Handshake, Version, ConnectionStates0, Hist0) ->
+    ct:pal("encode_handshake #1"),
     Seq = sequence(ConnectionStates0),
+    ct:pal("encode_handshake #2"),
     {EncHandshake, FragmentedHandshake} = dtls_handshake:encode_handshake(Handshake, Version,
 								      Seq, 1400),
+    ct:pal("encode_handshake #3"),
     Hist = ssl_handshake:update_handshake_history(Hist0, EncHandshake),
+    ct:pal("encode_handshake #4: ~p", [{FragmentedHandshake, Version, ConnectionStates0}]),
+
     {Encoded, ConnectionStates} =
-        dtls_record:encode_handshake(FragmentedHandshake, 
-				     Version, ConnectionStates0),
+	ssl_record:encode_handshake(FragmentedHandshake, 
+				    Version, ConnectionStates0),
     {Encoded, ConnectionStates, Hist}.
 
 next_record(#state{%%flight = #flight{state = finished}, 
