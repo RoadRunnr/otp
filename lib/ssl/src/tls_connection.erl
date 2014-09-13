@@ -64,8 +64,8 @@
 -export([start_link/7]). 
 
 %% gen_fsm callbacks
--export([init/1, hello/2, certify/2, cipher/2,
-	 abbreviated/2, connection/2, handle_event/3,
+-export([init/1, hello/2, certify/2, cipher/2, cipher_finish/2,
+	 abbreviated/2, abbreviated_finish/2, connection/2, handle_event/3,
          handle_sync_event/4, handle_info/3, terminate/3, code_change/4, format_status/2]).
 
 %%====================================================================
@@ -222,11 +222,17 @@ hello(Msg, State) ->
 abbreviated(Msg, State) ->
     ssl_connection:abbreviated(Msg, State, ?MODULE).
 
+abbreviated_finish(Msg, State) ->
+    ssl_connection:abbreviated_finish(Msg, State, ?MODULE).
+
 certify(Msg, State) ->
     ssl_connection:certify(Msg, State, ?MODULE).
 
 cipher(Msg, State) ->
      ssl_connection:cipher(Msg, State, ?MODULE).
+
+cipher_finish(Msg, State) ->
+     ssl_connection:cipher_finish(Msg, State, ?MODULE).
 
 connection(#hello_request{}, #state{host = Host, port = Port,
 				    session = #session{own_certificate = Cert} = Session0,
@@ -407,34 +413,12 @@ next_state(Current, Next, #ssl_tls{type = ?HANDSHAKE, fragment = Data},
 	   State0 = #state{protocol_buffers =
 			       #protocol_buffers{tls_handshake_buffer = Buf0} = Buffers,
 			   negotiated_version = Version}) ->
-    Handle = 
-   	fun({#hello_request{} = Packet, _}, {next_state, connection = SName, State}) ->
-   		%% This message should not be included in handshake
-   		%% message hashes. Starts new handshake (renegotiation)
-		Hs0 = ssl_handshake:init_handshake_history(),
-		?MODULE:SName(Packet, State#state{tls_handshake_history=Hs0,
-   						  renegotiation = {true, peer}});
-   	   ({#hello_request{} = Packet, _}, {next_state, SName, State}) ->
-   		%% This message should not be included in handshake
-   		%% message hashes. Already in negotiation so it will be ignored!
-   		?MODULE:SName(Packet, State);
-	   ({#client_hello{} = Packet, Raw}, {next_state, connection = SName, State}) ->
-		Version = Packet#client_hello.client_version,
-		Hs0 = ssl_handshake:init_handshake_history(),
-		Hs1 = ssl_handshake:update_handshake_history(Hs0, Raw),
-		?MODULE:SName(Packet, State#state{tls_handshake_history=Hs1,
-   						  renegotiation = {true, peer}});
-	   ({Packet, Raw}, {next_state, SName, State = #state{tls_handshake_history=Hs0}}) ->
-		Hs1 = ssl_handshake:update_handshake_history(Hs0, Raw),
-		?MODULE:SName(Packet, State#state{tls_handshake_history=Hs1});
-   	   (_, StopState) -> StopState
-   	end,
     try
 	{Packets, Buf} = tls_handshake:get_tls_handshake(Version,Data,Buf0),
 	State = State0#state{protocol_buffers =
 				 Buffers#protocol_buffers{tls_packets = Packets,
 							  tls_handshake_buffer = Buf}},
-	handle_tls_handshake(Handle, Next, State)
+	handle_tls_handshake(fun handle_handshake/2, Next, State)
     catch throw:#alert{} = Alert ->
 	    handle_own_alert(Alert, Version, Current, State0)
     end;
@@ -446,17 +430,20 @@ next_state(_, StateName, #ssl_tls{type = ?APPLICATION_DATA, fragment = Data}, St
 	{Record, State} ->
    	    next_state(StateName, StateName, Record, State)
     end;
-next_state(Current, Next, #ssl_tls{type = ?CHANGE_CIPHER_SPEC, fragment = <<1>>} = 
-	       _ChangeCipher, 
- 	   #state{connection_states = ConnectionStates0} = State0) 
-  when Next == cipher; Next == abbreviated ->
-    ConnectionStates1 =
-	ssl_record:activate_pending_connection_state(ConnectionStates0, read),
-    {Record, State} = next_record(State0#state{connection_states = ConnectionStates1}),
-    next_state(Current, Next, Record, State#state{expecting_finished = true});
-next_state(Current, _Next, #ssl_tls{type = ?CHANGE_CIPHER_SPEC, fragment = <<1>>} = 
- 	       _ChangeCipher, #state{negotiated_version = Version} = State) ->
-    handle_own_alert(?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE), Version, Current, State);
+
+next_state(Current, Next, #ssl_tls{type = ?CHANGE_CIPHER_SPEC, fragment = <<1>>} =
+	       _ChangeCipher,
+	   State0 = #state{protocol_buffers =
+			       #protocol_buffers{tls_packets = Packets0} = Buffers,
+			   negotiated_version = Version}) ->
+    try
+	State = State0#state{protocol_buffers =
+				 Buffers#protocol_buffers{tls_packets = Packets0 ++ [#change_cipher_spec{}]}},
+	handle_tls_handshake(fun handle_handshake/2, Next, State)
+    catch throw:#alert{} = Alert ->
+	    handle_own_alert(Alert, Version, Current, State0)
+    end;
+
 next_state(Current, Next, #ssl_tls{type = _Unknown}, State0) ->
     %% Ignore unknown type 
     {Record, State} = next_record(State0),
@@ -716,6 +703,36 @@ send_or_reply(_, Pid, _From, Data) ->
 send_user(Pid, Msg) ->
     Pid ! Msg.
 
+
+handle_handshake({#hello_request{} = Packet, _}, {next_state, connection = SName, State}) ->
+    %% This message should not be included in handshake
+    %% message hashes. Starts new handshake (renegotiation)
+    Hs0 = ssl_handshake:init_handshake_history(),
+    ?MODULE:SName(Packet, State#state{tls_handshake_history=Hs0,
+				      renegotiation = {true, peer}});
+
+handle_handshake({#hello_request{} = Packet, _}, {next_state, SName, State}) ->
+    %% This message should not be included in handshake
+    %% message hashes. Already in negotiation so it will be ignored!
+    ?MODULE:SName(Packet, State);
+
+handle_handshake({#client_hello{} = Packet, Raw}, {next_state, connection = SName, State = #state{negotiated_version = Version}}) ->
+    Version = Packet#client_hello.client_version,
+    Hs0 = ssl_handshake:init_handshake_history(),
+    Hs1 = ssl_handshake:update_handshake_history(Hs0, Raw),
+    ?MODULE:SName(Packet, State#state{tls_handshake_history=Hs1,
+				      renegotiation = {true, peer}});
+
+handle_handshake(Packet = #change_cipher_spec{}, {next_state, SName, State}) ->
+    ?MODULE:SName(Packet, State);
+
+handle_handshake({Packet, Raw}, {next_state, SName, State = #state{tls_handshake_history=Hs0}}) ->
+    Hs1 = ssl_handshake:update_handshake_history(Hs0, Raw),
+    ?MODULE:SName(Packet, State#state{tls_handshake_history=Hs1});
+
+handle_handshake(_, StopState) ->
+    StopState.
+
 handle_tls_handshake(Handle, StateName,
 		     #state{protocol_buffers =
 				#protocol_buffers{tls_packets = [Packet]} = Buffers} = State) ->
@@ -922,10 +939,14 @@ handle_normal_shutdown(Alert, StateName, #state{socket = Socket,
 						start_or_recv_from = RecvFrom, role = Role}) ->
     alert_user(Transport, Tracker, Socket, StateName, Opts, Pid, RecvFrom, Alert, Role).
 
+handle_unexpected_message(Msg = #change_cipher_spec{}, StateName, #state{negotiated_version = Version} = State) ->
+    ct:pal("Got ~p in ~p, State ~p", [Msg, StateName, State]),
+    Alert = ?ALERT_REC(?FATAL, ?HANDSHAKE_FAILURE),
+    handle_own_alert(Alert, Version, StateName, State);
+
 handle_unexpected_message(Msg, Info, #state{negotiated_version = Version} = State) ->
     Alert =  ?ALERT_REC(?FATAL,?UNEXPECTED_MESSAGE),
     handle_own_alert(Alert, Version, {Info, Msg}, State).
-
 
 handle_close_alert(Data, StateName, State0) ->
     case next_tls_record(Data, State0) of
