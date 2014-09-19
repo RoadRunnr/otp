@@ -35,7 +35,7 @@
 -export([decode_cipher_text/2]).
 
 %% Encoding
--export([encode_plain_text/4]).
+-export([encode_plain_text/4, encode_tls_cipher_text/5]).
 
 %% Protocol version handling
 -export([protocol_version/1, lowest_protocol_version/2,

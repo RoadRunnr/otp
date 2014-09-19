@@ -887,7 +887,8 @@ handle_sync_event(peer_certificate, _, StateName,
     {reply, {ok, Cert}, StateName, State, get_timeout(State)};
 
 handle_sync_event(Event, _, StateName, State) ->
-    ct:pal("handle_sync_event: ~p~n", [Event]),
+    ct:pal("handle_sync_event ~p in ~p~n", [Event, StateName]),
+    ct:pal("ssl_options: ~p~n", [State#state.ssl_options]),
     {reply, error, StateName, State, get_timeout(State)}.
 
 handle_info({ErrorTag, Socket, econnaborted}, StateName,  

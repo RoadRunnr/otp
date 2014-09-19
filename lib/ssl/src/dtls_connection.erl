@@ -294,18 +294,16 @@ handle_sync_event(Event, From, StateName, State) ->
 %%--------------------------------------------------------------------
 
 %% raw data from socket, unpack records
-handle_info({Protocol, _, Data}, StateName,
+handle_info({Protocol, _, Data} = Info, StateName,
             #state{data_tag = Protocol} = State0) ->
-    %% Simplify for now to avoid dialzer warnings before implementation is  compleate
-    %% case next_tls_record(Data, State0) of
-    %% 	{Record, State} ->
-    %% 	    next_state(StateName, StateName, Record, State);
-    %% 	#alert{} = Alert ->
-    %% 	    handle_normal_shutdown(Alert, StateName, State0), 
-    %% 	    {stop, {shutdown, own_alert}, State0}
-    %% end;
-    {Record, State} = next_tls_record(Data, State0), 
-    next_state(StateName, StateName, Record, State);
+    io:format("handle_info: ~p~n", [Info]),
+    case next_tls_record(Data, State0) of
+    	{Record, State} ->
+    	    next_state(StateName, StateName, Record, State);
+    	#alert{} = Alert ->
+    	    handle_normal_shutdown(Alert, StateName, State0), 
+    	    {stop, {shutdown, own_alert}, State0}
+    end;
 
 handle_info({CloseTag, Socket}, StateName,
             #state{socket = Socket, close_tag = CloseTag,
@@ -517,9 +515,30 @@ initial_state(Role, Host, Port, Socket, {SSLOptions, SocketOptions, Tracker}, Us
 	  }.
 read_application_data(_,State) ->
     {#ssl_tls{fragment = <<"place holder">>}, State}.
-	
+
 next_tls_record(_, State) ->
     {#ssl_tls{fragment = <<"place holder">>}, State}.
+
+next_tls_record(Data, #state{protocol_buffers = #protocol_buffers{
+						   dtls_record_buffer = Buf1,
+						   dtls_fragment_state = HsState1} = Buffers} = State0) ->
+    case dtls_record:get_dtls_records(Data, Buf0) of
+	{Records, Buf1} ->
+	    {NextInfo, HsState} = dtls_handshake:get_dtls_handshake_aux(Records, HsState1),
+	    case NextInfo of
+		retransmit ->
+		    %% TODO: we got an resend, we might have to resent the last light
+		    ok;
+		_ ->
+		    next_record(State0#state{protocol_buffers =
+						 Buffers#protocol_buffers{dtls_record_buffer = Buf1,
+									  dtls_fragment_state = HsState,
+									  dtls_cipher_texts = NextInfo}})
+	    end;
+
+	#alert{} = Alert ->
+	    Alert
+    end.
 
 get_timeout(_) -> %% Place holder
     infinity.
@@ -527,7 +546,7 @@ get_timeout(_) -> %% Place holder
 next_state_connection(_, State) -> %% Place holder
     {next_state, connection, State, get_timeout(State)}.
 
-sequence(_) -> 
+sequence(_) ->
     %%TODO real imp
     1.
 
@@ -570,7 +589,7 @@ handle_dtls_client_hello(Address, Port,
 				     dtls_handshake:hello_verify_request(Cookie),
 				     Version, 0, 1400),
 	    HelloVerifyRequest =
-		dtls_record:encode_plain_text(?HANDSHAKE, Version, Epoch, Seq, RequestFragment),
+		dtls_record:encode_tls_cipher_text(?HANDSHAKE, Version, Epoch, Seq, RequestFragment),
 	    {reply, HelloVerifyRequest}
     end.
 
