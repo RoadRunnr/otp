@@ -21,7 +21,7 @@
 -module(maps).
 
 -export([get/3, filter/2,fold/3,
-         map/2, size/1,
+         map/2, mapfold/3, size/1,
          update_with/3, update_with/4,
          without/2, with/2]).
 
@@ -233,6 +233,26 @@ map(Fun,Map) when is_function(Fun, 2), is_map(Map) ->
 map(Fun,Map) ->
     erlang:error(error_type(Map),[Fun,Map]).
 
+-spec mapfold(Fun,Acc0,Map1) -> {Map2,Acc1} when
+    Fun :: fun((K, V1, AccIn) -> {V2, AccOut}),
+    Acc0 :: term(),
+    Acc1 :: term(),
+    AccIn :: term(),
+    AccOut :: term(),
+    Map1 :: map(),
+    Map2 :: map(),
+    K :: term(),
+    V1 :: term(),
+    V2 :: term().
+
+mapfold(Fun,Init,Map) when is_function(Fun,3), is_map(Map) ->
+    {L,A} = lists:mapfoldl(fun({K,V1},AccIn) ->
+				   {V2, AccOut} = Fun(K,V1,AccIn),
+				   {{K, V2}, AccOut}
+			   end,Init,maps:to_list(Map)),
+    {maps:from_list(L), A};
+mapfold(Fun,Init,Map) ->
+    erlang:error(error_type(Map),[Fun,Init,Map]).
 
 -spec size(Map) -> non_neg_integer() when
     Map :: map().

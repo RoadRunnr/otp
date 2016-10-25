@@ -204,6 +204,23 @@ false</code>
     </func>
 
     <func>
+      <name name="mapfold" arity="3"/>
+      <fsummary>Map and fold in one pass.</fsummary>
+      <desc>
+        <p>Combines the operations of
+          <seealso marker="#map/2"><c>map/2</c></seealso> and
+          <seealso marker="#fold/3"><c>fold/3</c></seealso> into one pass.</p>
+        <p><em>Example:</em></p>
+        <p>Summing the elements in a map and double them at the same time:</p>
+        <code type="none">
+> Fun = fun(_K,V1,Sum) -> {V1*2, V1+Sum} end,
+  Map = #{"k1" => 1, "k2" => 2, "k3" => 3},
+  maps:mapfold(Fun,0,Map).
+{#{"k1" => 2,"k2" => 4,"k3" => 6},6}</code>
+      </desc>
+    </func>
+
+    <func>
       <name name="merge" arity="2"/>
       <fsummary></fsummary>
       <desc>

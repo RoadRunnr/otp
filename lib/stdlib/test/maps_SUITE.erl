@@ -29,7 +29,7 @@
 
 -export([t_update_with_3/1, t_update_with_4/1,
          t_get_3/1, t_filter_2/1,
-         t_fold_3/1,t_map_2/1,t_size_1/1,
+         t_fold_3/1,t_map_2/1,t_mapfold_3/1,t_size_1/1,
          t_with_2/1,t_without_2/1]).
 
 %%-define(badmap(V,F,Args), {'EXIT', {{badmap,V}, [{maps,F,Args,_}|_]}}).
@@ -46,7 +46,7 @@ suite() ->
 all() ->
     [t_update_with_3,t_update_with_4,
      t_get_3,t_filter_2,
-     t_fold_3,t_map_2,t_size_1,
+     t_fold_3,t_map_2,t_mapfold_3,t_size_1,
      t_with_2,t_without_2].
 
 t_update_with_3(Config) when is_list(Config) ->
@@ -157,6 +157,19 @@ t_map_2(Config) when is_list(Config) ->
     ?badarg(map,[<<>>,#{}]) = (catch maps:map(id(<<>>),#{})),
     ok.
 
+t_mapfold_3(Config) when is_list(Config) ->
+    Vs = lists:seq(1,200),
+    M0 = maps:from_list([{{k,I},I}||I<-Vs]),
+    #{ {k,1} := 1, {k,200} := 200} = M0,
+    Tot0 = lists:sum(Vs),
+    {M1,Tot1} = maps:mapfold(fun({k,_},V,A) -> {V + 42, A + V} end, 0, M0),
+    true = Tot0 =:= Tot1,
+    #{ {k,1} := 43, {k,200} := 242} = M1,
+
+    %% error case
+    ?badmap(a,mapfold,[_,0,a]) = (catch maps:mapfold(fun(_,_,_) -> ok end,0,id(a))),
+    ?badarg(mapfold,[<<>>,0,#{}]) = (catch maps:mapfold(id(<<>>),0,#{})),
+    ok.
 
 t_size_1(Config) when is_list(Config) ->
       0 = maps:size(#{}),
