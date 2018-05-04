@@ -1,0 +1,19 @@
+ChoiceDefault DEFINITIONS IMPLICIT TAGS ::=
+
+BEGIN
+
+TestAttribute ::= SEQUENCE {
+  testCombination  [0]  TestCombination DEFAULT and:{},
+  ... }
+
+TestProfile ::= SEQUENCE {
+  testType   INTEGER,
+  ... }
+
+TestCombination ::= CHOICE {
+  and      [0]  SEQUENCE OF TestCombination,
+  or       [1]  SEQUENCE OF TestCombination,
+  not      [2]  TestCombination,
+  ... }
+
+END

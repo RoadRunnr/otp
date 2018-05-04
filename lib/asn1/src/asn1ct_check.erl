@@ -2173,8 +2173,9 @@ lookup_enum_value(S, Id, NNL) when is_atom(Id) ->
 	    asn1_error(S, {undefined,Id})
     end.
 
-normalize_choice(S, {'CHOICE',{C,V}}, CType, NameList)
+normalize_choice(S, {'CHOICE',{C,V}}, Components, NameList)
   when is_atom(C) ->
+    CType = get_choice_components(S,{'CHOICE',Components}),
     case lists:keyfind(C, #'ComponentType'.name, CType) of
 	#'ComponentType'{typespec=CT,name=Name} ->
 	    {C,normalize_value(S, CT, {'DEFAULT',V}, [Name|NameList])};
