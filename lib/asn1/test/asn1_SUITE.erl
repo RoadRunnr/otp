@@ -173,7 +173,8 @@ groups() ->
        test_x691,
        ticket_6143,
        test_OTP_9688,
-       testValueTest]},
+       testValueTest,
+       testImportedExtension]},
 
      {performance, [],
       [testTimer_ber,
@@ -871,6 +872,11 @@ testValueTest(Config) -> test(Config, fun testValueTest/3).
 testValueTest(Config, Rule, Opts) ->
     asn1_test_lib:compile("ValueTest", Config, [Rule|Opts]),
     testValueTest:main().
+
+testImportedExtension(Config) -> test(Config, fun testImportedExtension/3).
+testImportedExtension(Config, Rule, Opts) ->
+    asn1_test_lib:compile_all(["TestUseAttribute"], Config, [Rule|Opts]),
+    ok.
 
 testOpenTypeImplicitTag(Config) ->
     test(Config, fun testOpenTypeImplicitTag/3).

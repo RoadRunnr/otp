@@ -1,0 +1,18 @@
+TestDefAttribute DEFINITIONS IMPLICIT TAGS ::=
+BEGIN
+
+AttributeId ::= CHOICE {
+  globalForm  [0] IMPLICIT OBJECT IDENTIFIER,
+  localForm   [1] IMPLICIT INTEGER
+}
+
+ATTRIBUTE ::= CLASS {&id     AttributeId UNIQUE,
+                          &Value
+} WITH SYNTAX {TYPE &Value
+              ID &id
+}
+
+AttributeSet ATTRIBUTE ::=
+	{...}
+
+END

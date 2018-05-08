@@ -1,0 +1,17 @@
+TestUseAttribute DEFINITIONS IMPLICIT TAGS ::=
+BEGIN
+
+IMPORTS
+	ATTRIBUTE, AttributeSet FROM TestDefAttribute;
+
+Definition ::=
+  SET OF
+    SEQUENCE {attributeId        ATTRIBUTE.&id({AttributeSet}),
+              oldAttributeValue
+                [1]  ATTRIBUTE.&Value({AttributeSet}{@.attributeId})
+                  OPTIONAL,
+              newAttributeValue
+                [2]  ATTRIBUTE.&Value({AttributeSet}{@.attributeId})
+    }
+
+END
