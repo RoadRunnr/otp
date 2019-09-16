@@ -607,6 +607,7 @@ transition({P, Sock, Bin}, #transport{socket = Sock,
                            = S)
   when P == ssl, true == B;
        P == tcp ->
+    ct:log("recv: ~1000p", [Bin]),
     recv(acc(Frag, Bin), S);
 
 %% Capabilties exchange has decided on whether or not to run over TLS.
@@ -655,7 +656,12 @@ transition({diameter, {close, Pid}}, #transport{parent = Pid,
 
 %% Timeout for reception of outstanding packets.
 transition({timeout, TRef, flush}, #transport{tref = TRef} = S) ->
+    ct:log("transition timeout ~p, S: ~p", [TRef, S#transport{frag = "****"}]),
     flush(S#transport{tref = false});
+
+transition({timeout, _, flush}, S) ->
+    %% race between of stop_timer and already queued message
+    S;
 
 %% Request for the local port number.
 transition({resolve_port, Pid}, #transport{socket = Sock,
@@ -726,7 +732,7 @@ tls(accept, Sock, Opts) ->
 %% Receive packets until a full message is received,
 
 recv({Msg, Rest}, S) ->  %% have a complete message ...
-    recv(acc(Rest), message(recv, Msg, S));
+    recv(acc(Rest), message(recv, Msg, stop_fragment_timer(S)));
 
 recv(Frag, #transport{recv = B,
                       socket = Sock,
@@ -812,14 +818,17 @@ bin(Bin) ->
 
 %% No fragment to flush or not receiving messages.
 flush(#transport{frag = <<>>} = S) ->
+    ct:log("flush #1: ~p", [S#transport{frag = "****"}]),
     S;
 
 %% Messages have been received since last timer expiry.
 flush(#transport{flush = false} = S) ->
+    ct:log("flush #2: ~p", [S#transport{frag = "****"}]),
     start_fragment_timer(S#transport{flush = true});
 
 %% No messages since last expiry.
 flush(#transport{frag = Frag} = S) ->
+    ct:log("flush #3: ~p", [S#transport{frag = "****"}]),
     message(recv, bin(Frag), S#transport{frag = <<>>}).
 
 %% start_fragment_timer/1
@@ -829,10 +838,27 @@ flush(#transport{frag = Frag} = S) ->
 start_fragment_timer(#transport{frag = B, tref = TRef} = S)
   when B == <<>>;
        TRef /= false ->
+    ct:log("start_fragment_timer #1 ~p B: ~1000p", [TRef, B]),
     S;
 
 start_fragment_timer(#transport{timeout = Tmo} = S) ->
-    S#transport{tref = erlang:start_timer(Tmo, self(), flush)}.
+    R = S#transport{tref = erlang:start_timer(Tmo, self(), flush)},
+    ct:log("start_fragment_timer #2 ~p, B: ~1000p", [S#transport.tref, S#transport.frag]),
+    R.
+
+%% stop_fragment_timer/1
+%%
+%% Stop a timer only if there's one running
+
+stop_fragment_timer(#transport{tref = TRef} = S)
+  when is_reference(TRef) ->
+    ct:log("stop_fragment_timer #1: ~p", [S#transport{frag = "****"}]),
+    erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
+    S#transport{tref = false, flush = false};
+
+stop_fragment_timer(S) ->
+    ct:log("stop_fragment_timer #1: ~p", [S#transport{frag = "****"}]),
+    S.
 
 %% accept/2
 
@@ -892,6 +918,7 @@ send(M, Sock, Bin) ->
 %% setopts/3
 
 setopts(gen_tcp, Sock, Opts) ->
+    ct:log("setopts ~p ~p", [Sock, Opts]),
     inet:setopts(Sock, Opts);
 setopts(ssl, Sock, Opts) ->
     ssl:setopts(Sock, Opts);

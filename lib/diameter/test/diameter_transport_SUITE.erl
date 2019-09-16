@@ -38,6 +38,7 @@
          sctp_accept/1,
          sctp_connect/1,
          reconnect/1, reconnect/0,
+         tcp_fragment/1,
          stop/1]).
 
 -export([accept/1,
@@ -102,7 +103,8 @@ tc() ->
      tcp_connect,
      sctp_accept,
      sctp_connect,
-     reconnect].
+     reconnect,
+     tcp_fragment].
 
 init_per_suite(Config) ->
     [{sctp, ?util:have_sctp()} | Config].
@@ -171,6 +173,18 @@ sctp_connect(Config) ->
 connect(Prot) ->
     T = {Prot, make_ref()},
     [] = ?util:run([{?MODULE, [init, X, T]} || X <- [gen_accept, connect]]).
+
+%% ===========================================================================
+%% tcp_fragment/1
+%%
+%% Test TCP fragment timeout.
+
+tcp_fragment(_) ->
+    fragment(tcp).
+
+fragment(Prot) ->
+    T = {Prot, make_ref()},
+    [] = ?util:run([{?MODULE, [init, X, T]} || X <- [gen_accept2, fragment]]).
 
 %% ===========================================================================
 %% reconnect/1
@@ -306,6 +320,25 @@ init(gen_accept, {Prot, Ref}) ->
             T
     end;
 
+init(gen_accept2, {Prot, Ref}) ->
+    %% Open a listening socket and publish the port number.
+    {ok, LSock} = gen_listen(Prot),
+    {ok, PortNr} = inet:port(LSock),
+    true = diameter_reg:add_new(?TEST_LISTENER(Ref, PortNr)),
+
+    %% Accept a connection, receive a message send it back, and wait
+    %% for the peer to close the connection.
+    {ok, Sock} = gen_accept(Prot, LSock),
+    Bin1 = gen_recv(Prot, Sock),
+    ok = gen_send(Prot, Sock, Bin1),
+    Bin2 = gen_recv(Prot, Sock),
+    ok = gen_send(Prot, Sock, Bin2),
+    receive
+        {tcp_closed, Sock} = T ->
+            T;
+        ?SCTP(Sock, {_, #sctp_assoc_change{}}) = T ->
+            T
+    end;
 init(connect, {Prot, Ref}) ->
     %% Lookup the peer's listening socket.
     [{?TEST_LISTENER(_, PortNr), _}]
@@ -318,7 +351,35 @@ init(connect, {Prot, Ref}) ->
     %% Send a message and receive it back.
     Bin = make_msg(),
     TPid ! ?TMSG({send, Bin}),
-    Bin = bin(Prot, ?RECV(?TMSG({recv, P}), P)).
+    Bin = bin(Prot, ?RECV(?TMSG({recv, P}), P));
+
+init(fragment, {Prot, Ref}) ->
+    %% Lookup the peer's listening socket.
+    [{?TEST_LISTENER(_, PortNr), _}]
+        = diameter_reg:wait(?TEST_LISTENER(Ref, '_')),
+
+    %% Start a connecting transport and receive notification of
+    %% the connection.
+    TPid = start_connect(Prot, PortNr, Ref),
+
+    %% Send two message and receive both back.
+    Bin1 = make_msg(),
+    Len1 = byte_size(Bin1) div 2,
+    <<M1P1:Len1/bytes, M1P2/binary>> = Bin1,
+    Bin2 = make_msg(),
+    Len2 = byte_size(Bin2) div 2,
+    <<M2P1:Len2/bytes, M2P2/binary>> = Bin2,
+
+    TPid ! ?TMSG({send, M1P1}),
+    ct:sleep(150),   %% make sure the fragment timer has been started
+    TPid ! ?TMSG({send, <<M1P2/binary, M2P1/binary>>}),
+    ct:sleep(150),   %% make sure the fragment timer has been started
+    TPid ! ?TMSG({send, M2P2}),
+    ct:sleep(150),   %% make sure the fragment has been send
+    ct:pal("Sent done, port ~p", [PortNr]),
+
+    Bin1 = bin(Prot, ?RECV(?TMSG({recv, P1}), P1)),
+    Bin2 = bin(Prot, ?RECV(?TMSG({recv, P2}), P2)).
 
 bin(sctp, #diameter_packet{bin = Bin}) ->
     Bin;
@@ -369,7 +430,9 @@ start_connect(sctp, T, Svc, Opts) ->
         = diameter_sctp:start(T, Svc, [{sctp_initmsg, ?SCTP_INIT} | Opts]),
     {ok, TPid};
 start_connect(tcp, T, Svc, Opts) ->
-    diameter_tcp:start(T, Svc, Opts).
+    %% set fragment timer to 100 ms and turn off nagle (otherwise the 200ms nagle
+    %% timeout will interfer with the fragment timer)
+    diameter_tcp:start(T, Svc, [{nodelay, true}, {recbuf, 1024000}, {fragment_timer, 100} | Opts]).
 
 %% start_accept/2
 
@@ -382,7 +445,9 @@ start_accept(Prot, Ref) ->
 start_accept(sctp, T, Svc, Opts) ->
     diameter_sctp:start(T, Svc, [{sctp_initmsg, ?SCTP_INIT} | Opts]);
 start_accept(tcp, T, Svc, Opts) ->
-    diameter_tcp:start(T, Svc, Opts).
+    %% set fragment timer to 100 ms and turn off nagle (otherwise the 200ms nagle
+    %% timeout will interfer with the fragment timer)
+    diameter_tcp:start(T, Svc, [{nodelay, true}, {recbuf, 1024000}, {fragment_timer, 100} | Opts]).
 
 %% ===========================================================================
 
